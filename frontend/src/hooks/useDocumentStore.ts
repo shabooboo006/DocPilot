@@ -18,7 +18,7 @@ export const useDocumentStore = create<DocumentState>((set) => ({
   documentName: '',
   suggestMode: true,
   connectionStatus: 'idle',
-  setDocument: (id, name) => set({ documentId: id, documentName: name, connectionStatus: 'idle' }),
+  setDocument: (id, name) => set({ documentId: id, documentName: name }),
   setSuggestMode: (mode) => set({ suggestMode: mode }),
   setConnectionStatus: (status) => set({ connectionStatus: status }),
   clearDocument: () => set({ documentId: null, documentName: '', connectionStatus: 'idle' }),

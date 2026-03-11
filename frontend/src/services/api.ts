@@ -22,6 +22,12 @@ export async function createDocument(name = 'Untitled'): Promise<{ document_id: 
   return res.json();
 }
 
+export async function getDocumentInfo(documentId: string): Promise<{ document_id: string; name: string; created_at: string }> {
+  const res = await fetch(`${API_BASE}/api/documents/${documentId}`);
+  if (!res.ok) throw new Error('Document not found');
+  return res.json();
+}
+
 export function getDownloadUrl(documentId: string): string {
   return `${API_BASE}/api/documents/${documentId}/download`;
 }

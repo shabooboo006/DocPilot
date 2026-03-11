@@ -43,7 +43,7 @@ export function MainLayout({ left, right }: MainLayoutProps) {
         className="w-1 flex-shrink-0 bg-gray-200 hover:bg-blue-400 cursor-col-resize transition-colors"
         onMouseDown={onMouseDown}
       />
-      <div style={{ width: `${100 - splitPercent - 0.25}%` }} className="flex overflow-hidden">
+      <div className="flex flex-1 min-w-0 overflow-hidden">
         {right}
       </div>
     </div>

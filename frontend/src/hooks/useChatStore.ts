@@ -6,6 +6,7 @@ interface ChatState {
   isAIThinking: boolean;
   addMessage: (msg: Omit<Message, 'id' | 'timestamp'>) => void;
   updateToolCallStatus: (toolName: string, status: string, result?: Record<string, unknown>) => void;
+  appendToLastAIMessage: (content: string) => void;
   setAIThinking: (thinking: boolean) => void;
   clearMessages: () => void;
 }
@@ -36,6 +37,20 @@ export const useChatStore = create<ChatState>((set) => ({
           break;
         }
       }
+      return { messages };
+    }),
+
+  appendToLastAIMessage: (content) =>
+    set((state) => {
+      const messages = [...state.messages];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'ai' && !messages[i].toolCall) {
+          messages[i] = { ...messages[i], content: messages[i].content + content };
+          return { messages };
+        }
+      }
+      // No existing AI message found, create a new one
+      messages.push({ id: String(++_id), timestamp: Date.now(), role: 'ai', content });
       return { messages };
     }),
 
