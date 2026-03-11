@@ -29,6 +29,9 @@ export function useSuperdoc(documentId: string | null) {
       // Dynamically import superdoc to avoid SSR issues
       import('superdoc').then(({ SuperDoc }) => {
         if (!containerRef.current) return;
+        // Cast provider to satisfy CollaborationProvider interface (y-websocket provider is compatible at runtime)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const collabProvider = provider as any;
         superdocRef.current = new SuperDoc({
           selector: containerRef.current,
           documentMode: 'editing',
@@ -37,7 +40,7 @@ export function useSuperdoc(documentId: string | null) {
             email: 'user@docpilot.local',
           },
           modules: {
-            collaboration: { ydoc, provider },
+            collaboration: { ydoc, provider: collabProvider },
           },
         });
       });
