@@ -1,14 +1,15 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useChatStore } from './useChatStore';
 import { useDocumentStore } from './useDocumentStore';
-import type { ChatWsMessage } from '../types';
+import type { ChatAttachment, ChatWsMessage } from '../types';
 
-const WS_BASE = 'ws://localhost:8000';
+const WS_BASE = 'ws://localhost:6800';
 
 export function useChatWebSocket(documentId: string | null) {
   const ws = useRef<WebSocket | null>(null);
   const { addMessage, updateToolCallStatus, setAIThinking } = useChatStore();
   const suggestMode = useDocumentStore((s) => s.suggestMode);
+  const requestEditorRefresh = useDocumentStore((s) => s.requestEditorRefresh);
 
   useEffect(() => {
     if (!documentId) return;
@@ -35,7 +36,23 @@ export function useChatWebSocket(documentId: string | null) {
           });
           break;
         case 'tool_result':
-          updateToolCallStatus(data.tool || '', data.status || 'success', data.result);
+          updateToolCallStatus(data.tool || '', data.status || 'success', {
+            ...(data.result || {}),
+            document_mutated: data.document_mutated,
+            reload_required: data.reload_required,
+            tracked_changes_summary: data.tracked_changes_summary,
+            error_code: data.error_code,
+            candidates: data.candidates,
+            anchor_candidates: data.anchor_candidates,
+            selected_anchor: data.selected_anchor,
+            asset_id: data.asset_id,
+            caption_added: data.caption_added,
+            caption_text: data.caption_text,
+            final_size: data.final_size,
+          });
+          if (data.status === 'success' && data.reload_required) {
+            requestEditorRefresh();
+          }
           break;
         case 'error':
           setAIThinking(false);
@@ -58,17 +75,27 @@ export function useChatWebSocket(documentId: string | null) {
       socket.close();
       ws.current = null;
     };
-  }, [documentId, addMessage, updateToolCallStatus, setAIThinking]);
+  }, [documentId, addMessage, updateToolCallStatus, setAIThinking, requestEditorRefresh]);
 
   const sendMessage = useCallback(
-    (content: string) => {
-      if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
-      addMessage({ role: 'user', content });
+    (content: string, attachments: ChatAttachment[] = []) => {
+      if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+        addMessage({ role: 'system', error: '对话通道尚未连接，请稍后重试。' });
+        return;
+      }
+      addMessage({ role: 'user', content, attachments });
       setAIThinking(true);
       ws.current.send(
         JSON.stringify({
           type: 'user_message',
           content,
+          attachments: attachments.map(({ asset_id, filename, mime_type, width, height }) => ({
+            asset_id,
+            filename,
+            mime_type,
+            width,
+            height,
+          })),
           suggest: suggestMode,
         })
       );

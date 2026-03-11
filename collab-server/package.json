@@ -16,7 +16,8 @@
     "dotenv": "^16",
     "fastify": "^5",
     "minio": "^8",
-    "yjs": "^13.6.29"
+    "superdoc": "^1.18.1",
+    "yjs": "13.6.19"
   },
   "devDependencies": {
     "@types/node": "^22",

@@ -8,6 +8,7 @@ def test_settings_defaults():
         litellm_api_key="test-key",
     )
     assert s.minio_bucket == "docpilot-documents"
-    assert s.collab_server_url == "ws://localhost:3050"
-    assert s.backend_port == 8000
+    assert s.collab_server_url == "ws://localhost:6350"
+    assert s.superdoc_executor_url == "http://localhost:6350"
+    assert s.backend_port == 6800
     assert s.minio_use_ssl is False

@@ -6,7 +6,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(__dirname, '../../.env') });
 
 export const config = {
-  port: parseInt(process.env.COLLAB_SERVER_PORT || '3050', 10),
+  port: parseInt(process.env.COLLAB_SERVER_PORT || '6350', 10),
   minio: {
     endPoint: (process.env.MINIO_ENDPOINT || 'localhost:9000').split(':')[0],
     port: parseInt((process.env.MINIO_ENDPOINT || 'localhost:9000').split(':')[1] || '9000', 10),

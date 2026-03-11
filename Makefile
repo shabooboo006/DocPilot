@@ -3,13 +3,13 @@
 install:
 	cd collab-server && npm install
 	cd frontend && npm install
-	cd backend && uv sync
+	cd backend && uv venv && uv sync
 
 dev-collab:
 	cd collab-server && npm run dev
 
 dev-backend:
-	cd backend && uv run uvicorn app.main:app --reload --port 8000
+	cd backend && uv run uvicorn app.main:app --reload --port 6800
 
 dev-frontend:
 	cd frontend && npm run dev

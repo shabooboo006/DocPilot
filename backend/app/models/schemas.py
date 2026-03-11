@@ -12,6 +12,24 @@ class DocumentCreateResponse(BaseModel):
     name: str
 
 
+class ChatAssetResponse(BaseModel):
+    asset_id: str
+    filename: str
+    mime_type: str
+    width: int
+    height: int
+    size_bytes: int
+    storage_key: str
+
+
+class ChatAttachment(BaseModel):
+    asset_id: str
+    filename: str
+    mime_type: str
+    width: int
+    height: int
+
+
 class ChatMessage(BaseModel):
     type: str
     content: str = ""

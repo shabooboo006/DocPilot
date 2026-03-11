@@ -15,8 +15,9 @@ class Settings(BaseSettings):
     litellm_api_base: str = ""
 
     # Services
-    collab_server_url: str = "ws://localhost:3050"
-    backend_port: int = 8000
+    collab_server_url: str = "ws://localhost:6350"
+    superdoc_executor_url: str = "http://localhost:6350"
+    backend_port: int = 6800
 
     model_config = SettingsConfigDict(
         env_file="../.env",

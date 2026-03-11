@@ -4,7 +4,8 @@ import { MessageBubble } from './MessageBubble';
 import { ToolCallIndicator } from './ToolCallIndicator';
 
 export function MessageList() {
-  const messages = useChatStore((s) => s.messages);
+  const messages = useChatStore((state) => state.messages);
+  const isAIThinking = useChatStore((state) => state.isAIThinking);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -12,19 +13,28 @@ export function MessageList() {
   }, [messages]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3">
+    <div className="flex-1 overflow-y-auto px-4 py-4">
       {messages.length === 0 && (
-        <div className="text-center text-gray-400 text-sm mt-8">
-          开始和 AI 对话来编辑文档
+        <div className="rounded-[20px] border border-dashed border-black/10 bg-stone-50 p-4 text-sm leading-6 text-zinc-500">
+          这里会连续显示 Agent 的读取、定位、修改、刷新和追问过程。
         </div>
       )}
-      {messages.map((msg) =>
-        msg.toolCall ? (
-          <ToolCallIndicator key={msg.id} message={msg} />
-        ) : (
-          <MessageBubble key={msg.id} message={msg} />
-        )
-      )}
+
+      <div className="space-y-4">
+        {messages.map((message) =>
+          message.toolCall ? (
+            <ToolCallIndicator key={message.id} message={message} />
+          ) : (
+            <MessageBubble key={message.id} message={message} />
+          )
+        )}
+        {isAIThinking && (
+          <div className="flex justify-start">
+            <p className="text-sm leading-6 text-zinc-400">正在思考</p>
+          </div>
+        )}
+      </div>
+
       <div ref={bottomRef} />
     </div>
   );

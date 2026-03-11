@@ -80,34 +80,34 @@ make install
 ```bash
 cd collab-server && npm install
 cd frontend && npm install
-cd backend && uv sync
+cd backend && uv venv && uv sync
 ```
 
 ### 4. 启动开发服务
 
 需要打开**三个终端**分别运行：
 
-**终端 1 — 协同服务**（端口 3050）
+**终端 1 — 协同服务**（端口 6350）
 ```bash
 make dev-collab
 ```
-启动成功提示：`Server listening at http://0.0.0.0:3050`
+启动成功提示：`Server listening at http://0.0.0.0:6350`
 
-**终端 2 — 后端 API**（端口 8000）
+**终端 2 — 后端 API**（端口 6800）
 ```bash
 make dev-backend
 ```
-启动成功提示：`Uvicorn running on http://0.0.0.0:8000`
+启动成功提示：`Uvicorn running on http://0.0.0.0:6800`
 
-**终端 3 — 前端**（端口 5173）
+**终端 3 — 前端**（端口 6173）
 ```bash
 make dev-frontend
 ```
-启动成功提示：`Local: http://localhost:5173`
+启动成功提示：`Local: http://localhost:6173`
 
 ### 5. 打开浏览器
 
-访问 [http://localhost:5173](http://localhost:5173)
+访问 [http://localhost:6173](http://localhost:6173)
 
 ## 使用说明
 
@@ -138,26 +138,26 @@ cd backend && uv run pytest
 
 后端启动后访问：
 
-- Swagger UI：[http://localhost:8000/docs](http://localhost:8000/docs)
-- ReDoc：[http://localhost:8000/redoc](http://localhost:8000/redoc)
+- Swagger UI：[http://localhost:6800/docs](http://localhost:6800/docs)
+- ReDoc：[http://localhost:6800/redoc](http://localhost:6800/redoc)
 
 ## 架构说明
 
 ```
 浏览器
   │
-  ├─ HTTP ──→ FastAPI (8000)        # 文档 CRUD、AI Agent WebSocket
+  ├─ HTTP ──→ FastAPI (6800)        # 文档 CRUD、AI Agent WebSocket
   │               │
   │               └─ LiteLLM ──→ LLM API
   │
-  └─ WebSocket ──→ Fastify (3050)   # Yjs 实时协同
+  └─ WebSocket ──→ Fastify (6350)   # Yjs 实时协同
                       │
                       └─ MinIO      # .docx 文档持久化存储
 ```
 
 前端通过两条独立连接工作：
-- **Yjs WebSocket**（→ 协同服务 3050）：同步编辑器文档状态
-- **Chat WebSocket**（→ 后端 8000）：与 AI Agent 通信；AI 修改文档同样通过 Yjs 同步回编辑器
+- **Yjs WebSocket**（→ 协同服务 6350）：同步编辑器文档状态
+- **Chat WebSocket**（→ 后端 6800）：与 AI Agent 通信；AI 修改文档同样通过 Yjs 同步回编辑器
 
 ## 设计文档
 

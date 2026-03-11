@@ -1030,7 +1030,7 @@ SYSTEM_PROMPT = """你是 DocPilot AI 文档助手。用户会要求你编辑当
 - 如果用户意图不明确，先询问而不是猜测
 """
 
-MAX_TOOL_ROUNDS = 10
+MAX_TOOL_ROUNDS = 100
 
 
 async def run_agent_loop(

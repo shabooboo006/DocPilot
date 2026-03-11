@@ -1,16 +1,31 @@
 import json
 import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.services import agent_service
 from app.services.superdoc_service import superdoc_service
+from app.models.schemas import ChatAttachment
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# In-memory chat history per document session (MVP, no persistence)
-# NOTE: No concurrency guard — concurrent connections for the same document_id
-# will share history. Acceptable for MVP single-user scenario.
-_chat_histories: dict[str, list[dict]] = {}
+
+@dataclass
+class PendingAnchorTask:
+    user_message: str
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ChatSessionState:
+    history: list[dict[str, Any]] = field(default_factory=list)
+    pending_anchor_task: PendingAnchorTask | None = None
+
+
+_chat_sessions: dict[str, ChatSessionState] = {}
 
 
 @router.websocket("/ws/chat/{document_id}")
@@ -18,8 +33,7 @@ async def chat_websocket(ws: WebSocket, document_id: str):
     await ws.accept()
     logger.info(f"Chat WebSocket connected for document {document_id}")
 
-    if document_id not in _chat_histories:
-        _chat_histories[document_id] = []
+    session = _chat_sessions.setdefault(document_id, ChatSessionState())
 
     try:
         while True:
@@ -34,25 +48,43 @@ async def chat_websocket(ws: WebSocket, document_id: str):
 
             if msg_type == "user_message":
                 content = data.get("content", "").strip()
-                if not content:
+                attachment_payloads = data.get("attachments") or []
+                attachments = [ChatAttachment.model_validate(item).model_dump() for item in attachment_payloads]
+
+                if not content and not attachments:
                     continue
 
                 suggest = data.get("suggest", True)
-                history = list(_chat_histories[document_id])
+                effective_content, effective_attachments = _resolve_user_turn(
+                    content,
+                    attachments,
+                    session.pending_anchor_task,
+                )
 
-                ai_reply = await agent_service.run_agent_loop(
+                result = await agent_service.run_agent_loop(
                     document_id=document_id,
-                    user_message=content,
-                    chat_history=history,
+                    user_message=effective_content,
+                    chat_history=list(session.history),
+                    attachments=effective_attachments,
                     ws=ws,
                     suggest=suggest,
                 )
 
-                # Append user message to history
-                _chat_histories[document_id].append({"role": "user", "content": content})
-                # Append assistant reply if available
-                if ai_reply:
-                    _chat_histories[document_id].append({"role": "assistant", "content": ai_reply})
+                session.history.append({
+                    "role": "user",
+                    "content": _to_history_content(content, attachments),
+                })
+                if result.content:
+                    session.history.append({"role": "assistant", "content": result.content})
+
+                if result.pending_anchor_candidates:
+                    session.pending_anchor_task = PendingAnchorTask(
+                        user_message=result.pending_user_message or content,
+                        attachments=result.pending_attachments or attachments,
+                        candidates=result.pending_anchor_candidates,
+                    )
+                else:
+                    session.pending_anchor_task = None
 
             elif msg_type == "set_suggest_mode":
                 suggest = data.get("suggest", True)
@@ -69,10 +101,98 @@ async def chat_websocket(ws: WebSocket, document_id: str):
     except WebSocketDisconnect:
         logger.info(f"Chat WebSocket disconnected for document {document_id}")
         await superdoc_service.close_session(document_id)
-        _chat_histories.pop(document_id, None)
+        _chat_sessions.pop(document_id, None)
     except Exception as e:
         logger.error(f"WebSocket error for document {document_id}: {e}")
         try:
             await ws.send_json({"type": "error", "message": "Internal server error"})
         except Exception:
             pass
+
+
+def _resolve_user_turn(
+    content: str,
+    attachments: list[dict[str, Any]],
+    pending_anchor_task: PendingAnchorTask | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    if pending_anchor_task is None or attachments:
+        return content, attachments
+
+    selected_candidate = _select_anchor_candidate(content, pending_anchor_task.candidates)
+    if not selected_candidate:
+        return content, attachments
+
+    rewritten = (
+        "继续刚才的插图任务。\n"
+        f"原始要求：{pending_anchor_task.user_message}\n"
+        f"用户已选择候选位置：{selected_candidate.get('location_label') or selected_candidate.get('anchor_id')}\n"
+        f"anchor_id={selected_candidate.get('anchor_id')}\n"
+        "请直接使用该 anchor 完成插图，不要再次搜索位置。"
+    )
+    return rewritten, pending_anchor_task.attachments
+
+
+def _to_history_content(content: str, attachments: list[dict[str, Any]]) -> str | list[dict[str, str]]:
+    trimmed = content.strip() or "请处理我上传的图片。"
+    if not attachments:
+        return trimmed
+
+    summary = [
+        {
+            "type": "text",
+            "text": (
+                f"{trimmed}\n\n"
+                f"附件："
+                + ", ".join(
+                    f"{item.get('filename') or item.get('asset_id')}({item.get('width')}x{item.get('height')})"
+                    for item in attachments
+                )
+            ),
+        }
+    ]
+    return summary
+
+
+def _select_anchor_candidate(content: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+
+    explicit_index = _parse_candidate_index(content)
+    if explicit_index is not None and 0 <= explicit_index < len(candidates):
+        return candidates[explicit_index]
+
+    lowered = content.strip().lower()
+    for candidate in candidates:
+        haystacks = [
+            str(candidate.get("location_label") or "").lower(),
+            str(candidate.get("section_path") or "").lower(),
+            str(candidate.get("context_before") or "").lower(),
+            str(candidate.get("context_after") or "").lower(),
+        ]
+        if lowered and any(lowered in value for value in haystacks if value):
+            return candidate
+
+    return None
+
+
+def _parse_candidate_index(content: str) -> int | None:
+    mapping = {
+        "第一个": 0,
+        "第1个": 0,
+        "1": 0,
+        "第二个": 1,
+        "第2个": 1,
+        "2": 1,
+        "第三个": 2,
+        "第3个": 2,
+        "3": 2,
+    }
+    normalized = re.sub(r"\s+", "", content)
+    if normalized in mapping:
+        return mapping[normalized]
+
+    match = re.search(r"第\s*([1-9])\s*个", content)
+    if match:
+        return int(match.group(1)) - 1
+
+    return None

@@ -1,66 +1,267 @@
 import { useEffect, useRef } from 'react';
-import * as Y from 'yjs';
-import { WebsocketProvider } from 'y-websocket';
+import { fetchDocumentBlob, saveDocumentBlob } from '../../services/api';
 import { useDocumentStore } from '../../hooks/useDocumentStore';
 import 'superdoc/style.css';
 
-const COLLAB_URL = 'ws://localhost:3050';
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const SAVE_DEBOUNCE_MS = 1200;
+const MIN_AUTO_ZOOM = 70;
+const MAX_AUTO_ZOOM = 100;
+const AUTO_ZOOM_PADDING = 48;
 
-export function useSuperdoc(documentId: string | null) {
+type DocumentMode = 'editing' | 'suggesting';
+
+type SuperDocInstance = {
+  destroy?: () => void;
+  setDocumentMode?: (mode: DocumentMode) => void;
+  setZoom?: (percent: number) => void;
+  export?: (options?: { exportType?: string; triggerDownload?: boolean }) => Promise<Blob | void>;
+  activeEditor?: {
+    commands?: {
+      acceptAllTrackedChanges?: () => boolean;
+      rejectAllTrackedChanges?: () => boolean;
+    };
+  } | null;
+};
+
+export function useSuperdoc(documentId: string | null, documentName: string) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const superdocRef = useRef<unknown>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const superdocRef = useRef<SuperDocInstance | null>(null);
+  const currentZoomRef = useRef(MAX_AUTO_ZOOM);
   const setConnectionStatus = useDocumentStore((s) => s.setConnectionStatus);
+  const suggestMode = useDocumentStore((s) => s.suggestMode);
+  const editorRefreshKey = useDocumentStore((s) => s.editorRefreshKey);
+  const suggestModeRef = useRef(suggestMode);
+  const toolbarSelector = documentId ? `#superdoc-toolbar-${documentId}` : null;
 
   useEffect(() => {
-    if (!documentId || !containerRef.current) return;
+    suggestModeRef.current = suggestMode;
+    const superdoc = superdocRef.current;
+    if (!superdoc?.setDocumentMode) return;
 
-    setConnectionStatus('connecting');
+    superdoc.setDocumentMode(suggestMode ? 'suggesting' : 'editing');
+  }, [suggestMode]);
 
-    const ydoc = new Y.Doc();
-    const provider = new WebsocketProvider(COLLAB_URL, documentId, ydoc);
+  useEffect(() => {
+    if (!documentId || !containerRef.current || !toolbarRef.current) {
+      return;
+    }
 
-    let initialized = false;
+    let cancelled = false;
+    let saveTimer: number | undefined;
+    let resizeFrame: number | undefined;
+    let resizeObserver: ResizeObserver | undefined;
+    let saving = false;
+    let needsAnotherSave = false;
 
-    const onSync = (synced: boolean) => {
-      if (!synced || initialized || !containerRef.current) return;
-      initialized = true;
-      setConnectionStatus('connected');
+    const syncZoomToViewport = () => {
+      const editor = superdocRef.current;
+      const host = containerRef.current;
+      if (!editor?.setZoom || !host) return;
 
-      // Dynamically import superdoc to avoid SSR issues
-      import('superdoc').then(({ SuperDoc }) => {
-        if (!containerRef.current) return;
-        // Cast provider to satisfy CollaborationProvider interface (y-websocket provider is compatible at runtime)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const collabProvider = provider as any;
-        superdocRef.current = new SuperDoc({
-          selector: containerRef.current,
-          documentMode: 'editing',
-          user: {
-            name: '用户',
-            email: 'user@docpilot.local',
-          },
-          modules: {
-            collaboration: { ydoc, provider: collabProvider },
-          },
-        });
+      const page = host.querySelector<HTMLElement>('.super-editor-container:not(.web-layout)');
+      if (!page) return;
+
+      const renderedWidth = page.getBoundingClientRect().width;
+      const effectiveZoom = currentZoomRef.current / 100;
+      if (!renderedWidth || !effectiveZoom) return;
+
+      const baseWidth = renderedWidth / effectiveZoom;
+      const availableWidth = Math.max(host.clientWidth - AUTO_ZOOM_PADDING, 0);
+      if (!baseWidth || !availableWidth) return;
+
+      const nextZoom = Math.max(
+        MIN_AUTO_ZOOM,
+        Math.min(MAX_AUTO_ZOOM, Math.floor((availableWidth / baseWidth) * 100)),
+      );
+
+      if (Math.abs(nextZoom - currentZoomRef.current) < 1) return;
+
+      currentZoomRef.current = nextZoom;
+      editor.setZoom(nextZoom);
+    };
+
+    const scheduleZoomSync = () => {
+      if (resizeFrame !== undefined) {
+        window.cancelAnimationFrame(resizeFrame);
+      }
+      resizeFrame = window.requestAnimationFrame(() => {
+        syncZoomToViewport();
       });
     };
 
-    provider.on('sync', onSync);
-    provider.on('connection-close', () => setConnectionStatus('disconnected'));
+    const flushSave = async () => {
+      const editor = superdocRef.current;
+      if (!editor?.export || saving || cancelled) {
+        if (saving) {
+          needsAnotherSave = true;
+        }
+        return;
+      }
+
+      saving = true;
+      setConnectionStatus('saving');
+
+      try {
+        const exported = await editor.export({
+          exportType: 'docx',
+          triggerDownload: false,
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        if (exported instanceof Blob) {
+          await saveDocumentBlob(documentId, exported);
+        }
+
+        if (!cancelled) {
+          setConnectionStatus('ready');
+        }
+      } catch (error) {
+        console.error('Failed to save document', error);
+        if (!cancelled) {
+          setConnectionStatus('error');
+        }
+      } finally {
+        saving = false;
+        if (needsAnotherSave && !cancelled) {
+          needsAnotherSave = false;
+          void flushSave();
+        }
+      }
+    };
+
+    const scheduleSave = () => {
+      window.clearTimeout(saveTimer);
+      saveTimer = window.setTimeout(() => {
+        void flushSave();
+      }, SAVE_DEBOUNCE_MS);
+    };
+
+    const mountEditor = async () => {
+      setConnectionStatus('loading');
+
+      try {
+        const blob = await fetchDocumentBlob(documentId);
+        const file = new File(
+          [blob],
+          `${documentName || documentId}.docx`,
+          { type: DOCX_MIME },
+        );
+
+        const { SuperDoc } = await import('superdoc');
+        if (cancelled || !containerRef.current || !toolbarRef.current) return;
+
+        containerRef.current.innerHTML = '';
+        toolbarRef.current.innerHTML = '';
+
+        const editor = new SuperDoc({
+          selector: containerRef.current,
+          toolbar: toolbarSelector ?? undefined,
+          title: 'DocPilot',
+          documentMode: suggestModeRef.current ? 'suggesting' : 'editing',
+          documents: [
+            {
+              id: documentId,
+              type: 'docx',
+              name: file.name,
+              data: file,
+            },
+          ],
+          user: {
+            name: '当前用户',
+            email: 'user@docpilot.local',
+          },
+          comments: { visible: false },
+          trackChanges: { visible: true },
+          modules: {
+            toolbar: {
+              hideButtons: false,
+              responsiveToContainer: true,
+            },
+            comments: false,
+          },
+          onReady: () => {
+            if (!cancelled) {
+              setConnectionStatus('ready');
+              scheduleZoomSync();
+            }
+          },
+          onPaginationUpdate: () => {
+            if (!cancelled) {
+              scheduleZoomSync();
+            }
+          },
+          onEditorUpdate: () => {
+            if (!cancelled) {
+              scheduleSave();
+            }
+          },
+          onContentError: (payload: { error: object }) => {
+            console.error('SuperDoc content error', payload.error);
+            if (!cancelled) {
+              setConnectionStatus('error');
+            }
+          },
+          onException: (payload: unknown) => {
+            console.error('SuperDoc exception', payload);
+            if (!cancelled) {
+              setConnectionStatus('error');
+            }
+          },
+        });
+
+        superdocRef.current = editor as SuperDocInstance;
+        currentZoomRef.current = MAX_AUTO_ZOOM;
+        resizeObserver = new ResizeObserver(() => {
+          if (!cancelled) {
+            scheduleZoomSync();
+          }
+        });
+        resizeObserver.observe(containerRef.current);
+      } catch (error) {
+        console.error('Failed to initialize SuperDoc', error);
+        if (!cancelled) {
+          setConnectionStatus('error');
+        }
+      }
+    };
+
+    void mountEditor();
 
     return () => {
-      provider.off('sync', onSync);
-      const sd = superdocRef.current as { destroy?: () => void } | null;
-      if (sd) {
-        sd.destroy?.();
-        superdocRef.current = null;
+      cancelled = true;
+      window.clearTimeout(saveTimer);
+      if (resizeFrame !== undefined) {
+        window.cancelAnimationFrame(resizeFrame);
       }
-      provider.destroy();
-      ydoc.destroy();
-      initialized = false;
+      resizeObserver?.disconnect();
+      superdocRef.current?.destroy?.();
+      superdocRef.current = null;
     };
-  }, [documentId, setConnectionStatus]);
+  }, [
+    documentId,
+    documentName,
+    editorRefreshKey,
+    setConnectionStatus,
+  ]);
 
-  return { containerRef, superdocRef };
+  const acceptAllTrackedChanges = () => {
+    return Boolean(superdocRef.current?.activeEditor?.commands?.acceptAllTrackedChanges?.());
+  };
+
+  const rejectAllTrackedChanges = () => {
+    return Boolean(superdocRef.current?.activeEditor?.commands?.rejectAllTrackedChanges?.());
+  };
+
+  return {
+    containerRef,
+    toolbarRef,
+    toolbarSelector,
+    acceptAllTrackedChanges,
+    rejectAllTrackedChanges,
+  };
 }

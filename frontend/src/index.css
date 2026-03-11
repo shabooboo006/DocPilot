@@ -1,1 +1,107 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Newsreader:wght@500;600;700&display=swap');
 @import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  font-family: 'Instrument Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), transparent 32%),
+    linear-gradient(180deg, #f4efe8 0%, #efe7dc 100%);
+  color: #18181b;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(224, 79, 138, 0.18);
+}
+
+.superdoc-stage,
+.superdoc-host,
+.superdoc-host > div,
+.superdoc-toolbar-shell,
+.superdoc-toolbar-shell > div,
+.superdoc-host .sd-editor-scoped,
+.superdoc-host .sd-editor-scoped > div {
+  min-height: 0;
+}
+
+.superdoc-host .sd-editor-scoped {
+  background: transparent;
+  height: 100%;
+  overflow: auto;
+}
+
+.superdoc-host [data-superdoc-root],
+.superdoc-host .superdoc-container,
+.superdoc-host .superdoc {
+  height: 100%;
+}
+
+.superdoc-host .superdoc {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.superdoc-host .superdoc__layers {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+}
+
+.superdoc-host .superdoc__document,
+.superdoc-host .superdoc__sub-document {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.superdoc-host .editor-element,
+.superdoc-host .super-editor-container {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.superdoc-host .sd-editor-scoped .n-layout-scroll-container {
+  background: #f7f3ec;
+  height: 100%;
+  overflow: auto;
+}
+
+.superdoc-host .sd-editor-scoped .n-layout-header {
+  border-bottom: 1px solid rgba(24, 24, 27, 0.08);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(18px);
+}
+
+.superdoc-host .sd-editor-scoped .n-layout-content {
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.8), transparent 38%),
+    #f7f3ec;
+  overflow: auto;
+}
+
+.superdoc-toolbar-shell .superdoc-toolbar {
+  min-height: 54px;
+}
