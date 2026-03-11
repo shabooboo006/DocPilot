@@ -7,4 +7,11 @@ export default defineConfig({
   server: {
     port: 5173,
   },
+  build: {
+    rollupOptions: {
+      // @hocuspocus/provider is an optional superdoc peer dep for Hocuspocus
+      // collaboration; we use y-websocket directly and don't need it at runtime.
+      external: ['@hocuspocus/provider'],
+    },
+  },
 })
