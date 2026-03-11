@@ -44,7 +44,13 @@ export function useChatWebSocket(documentId: string | null) {
       }
     };
 
+    socket.onerror = () => {
+      // Reset thinking state so the input is not permanently locked
+      setAIThinking(false);
+    };
+
     socket.onclose = () => {
+      setAIThinking(false);
       ws.current = null;
     };
 

@@ -15,6 +15,7 @@ export function ChatInput({ onSend }: ChatInputProps) {
     if (!trimmed || isAIThinking) return;
     onSend(trimmed);
     setValue('');
+    inputRef.current?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
