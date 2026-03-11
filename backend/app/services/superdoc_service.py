@@ -18,21 +18,22 @@ class SuperDocServiceStub:
         )
 
     async def get_session(self, document_id: str, suggest: bool = True):
-        self.sessions[document_id] = {"document_id": document_id, "suggest": suggest}
+        if document_id not in self.sessions:
+            self.sessions[document_id] = {"document_id": document_id, "suggest": suggest}
         return self.sessions[document_id]
 
     async def close_session(self, document_id: str):
         self.sessions.pop(document_id, None)
 
     async def switch_mode(self, document_id: str, suggest: bool):
-        if document_id in self.sessions:
-            self.sessions[document_id]["suggest"] = suggest
+        await self.close_session(document_id)
+        await self.get_session(document_id, suggest=suggest)
 
     def get_tools(self, session) -> list:
         # Return empty list — LLM will respond without document tools
         return []
 
-    def dispatch_tool(self, session, tool_call) -> dict:
+    async def dispatch_tool(self, session, tool_call) -> dict:
         return {"error": "SuperDoc SDK not available"}
 
 

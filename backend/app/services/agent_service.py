@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Optional
 import litellm
 from fastapi import WebSocket
 from app.config import settings
@@ -32,7 +33,7 @@ async def run_agent_loop(
     chat_history: list[dict],
     ws: WebSocket,
     suggest: bool = True,
-) -> None:
+) -> Optional[str]:
     session = await superdoc_service.get_session(document_id, suggest=suggest)
     tools = superdoc_service.get_tools(session)
 
@@ -56,7 +57,7 @@ async def run_agent_loop(
         except Exception as e:
             logger.error(f"LiteLLM error: {e}")
             await ws.send_json({"type": "error", "message": f"LLM 调用失败: {str(e)}"})
-            return
+            return None
 
         choice = response.choices[0]
         tool_calls = getattr(choice.message, "tool_calls", None)
@@ -68,7 +69,7 @@ async def run_agent_loop(
                 "content": content,
                 "streaming": False,
             })
-            return
+            return content
 
         # Append assistant message with tool calls
         messages.append(choice.message.model_dump(exclude_none=True))
@@ -84,8 +85,9 @@ async def run_agent_loop(
                 "description": f"正在执行 {tool_name}...",
             })
 
+            result_str = ""
             try:
-                result = superdoc_service.dispatch_tool(session, tool_call)
+                result = await superdoc_service.dispatch_tool(session, tool_call)
                 result_str = json.dumps(result) if isinstance(result, (dict, list)) else str(result)
                 await ws.send_json({
                     "type": "tool_result",
@@ -113,3 +115,4 @@ async def run_agent_loop(
         "content": "操作步骤过多，已停止。请尝试更简单的指令。",
         "streaming": False,
     })
+    return None

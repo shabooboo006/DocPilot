@@ -8,6 +8,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # In-memory chat history per document session (MVP, no persistence)
+# NOTE: No concurrency guard — concurrent connections for the same document_id
+# will share history. Acceptable for MVP single-user scenario.
 _chat_histories: dict[str, list[dict]] = {}
 
 
@@ -38,7 +40,7 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                 suggest = data.get("suggest", True)
                 history = list(_chat_histories[document_id])
 
-                await agent_service.run_agent_loop(
+                ai_reply = await agent_service.run_agent_loop(
                     document_id=document_id,
                     user_message=content,
                     chat_history=history,
@@ -46,7 +48,11 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                     suggest=suggest,
                 )
 
+                # Append user message to history
                 _chat_histories[document_id].append({"role": "user", "content": content})
+                # Append assistant reply if available
+                if ai_reply:
+                    _chat_histories[document_id].append({"role": "assistant", "content": ai_reply})
 
             elif msg_type == "set_suggest_mode":
                 suggest = data.get("suggest", True)
