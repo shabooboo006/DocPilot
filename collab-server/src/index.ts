@@ -18,7 +18,10 @@ const collaboration = new CollaborationBuilder()
     return new Uint8Array(buffer);
   })
   .onAutoSave(async ({ documentId, document }: CollaborationParams) => {
-    if (!document) return;
+    if (!document) {
+      fastify.log.warn(`onAutoSave called without document for ${documentId}, skipping`);
+      return;
+    }
     const state = encodeStateAsUpdate(document);
     await saveDocument(documentId, Buffer.from(state));
     fastify.log.info(`Auto-saved document ${documentId}`);

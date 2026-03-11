@@ -17,7 +17,14 @@ export async function ensureBucket(): Promise<void> {
   }
 }
 
+function validateDocumentId(documentId: string): void {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(documentId)) {
+    throw new Error(`Invalid documentId: ${documentId}`);
+  }
+}
+
 export async function loadDocument(documentId: string): Promise<Buffer | null> {
+  validateDocumentId(documentId);
   try {
     const key = `documents/${documentId}/current.docx`;
     const stream = await minioClient.getObject(config.minio.bucket, key);
@@ -35,6 +42,7 @@ export async function loadDocument(documentId: string): Promise<Buffer | null> {
 }
 
 export async function saveDocument(documentId: string, data: Buffer): Promise<void> {
+  validateDocumentId(documentId);
   const key = `documents/${documentId}/current.docx`;
   await minioClient.putObject(config.minio.bucket, key, data);
 }
