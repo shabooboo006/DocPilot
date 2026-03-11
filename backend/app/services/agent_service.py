@@ -14,6 +14,8 @@ from app.services.superdoc_service import superdoc_service
 logger = logging.getLogger(__name__)
 
 STRUCTURED_STOP_ERROR_CODES = {"ambiguous_match", "insufficient_context", "title_not_unique"}
+STRUCTURED_RECOVERABLE_ERROR_CODES = {"invalid_target_state"}
+STRUCTURED_ERROR_CODES = STRUCTURED_STOP_ERROR_CODES | STRUCTURED_RECOVERABLE_ERROR_CODES
 
 
 @dataclass
@@ -27,14 +29,31 @@ BASE_SYSTEM_PROMPT = """你是 DocPilot AI 文档助手。用户会要求你阅�
 
 当前可用工具：
 - get_document_text：读取当前 Word 文档的结构化上下文快照
+- get_document_markdown：读取当前文档的 Markdown 视图，适合总结、导出或大段文本检查
 - get_formatting_capabilities：读取当前 SuperDoc 版本支持的格式能力
 - find_text_context：先定位目标文本，获取命中片段和前后文
+- query_match：执行更通用的官方 selector 查询，可用于精确发现文本/节点
+- preview_mutations：预演官方 mutation plan，不实际写入
+- apply_mutations：原子执行官方 mutation plan，适合批量结构化修改
 - find_insertion_anchor：根据自然语言意图定位图片应插入的正文锚点
 - list_caption_conventions：读取当前文档已有图片标题样式
 - insert_image_at_anchor：把图片插入正文锚点，并可自动补图片标题
 - set_document_title：设置 Word 文档唯一主标题
 - replace_text：只在已确认片段内做精确替换
+- insert_paragraph_relative：在已确认片段前后插入新段落
+- insert_heading_relative：在已确认片段前后插入新标题
 - append_paragraph：在文档正文末尾追加段落
+- create_table_relative：在已确认片段前后新建表格
+- get_table_details：读取指定表格的结构、单元格与属性
+- set_table_cell_text：按表格/行/列写入单元格文本
+- list_comments：查看当前文档批注/评论线程
+- add_comment_on_text：在已确认文本上新增批注
+- reply_to_comment：回复现有批注线程
+- resolve_comment：将批注标记为已解决
+- list_tracked_changes：查看当前文档修订列表
+- decide_tracked_change：接受或拒绝单条/全部修订
+- list_hyperlinks：查看当前文档链接
+- wrap_text_with_link：把已确认文本包装成超链接
 - apply_formatting：在已确认片段内调整字符、段落或列表格式
 
 工作原则：
@@ -44,10 +63,19 @@ BASE_SYSTEM_PROMPT = """你是 DocPilot AI 文档助手。用户会要求你阅�
 - 所有正文修改都要先调用 find_text_context，确认 segment_id、所在结构、前后文，再执行最小必要改动
 - 调整字符格式时，必须先确认 segment_id；如果只改片段中的某几个字，必须带上 target_text 与上下文；只有在明确要改整个片段时，才能使用 apply_to_entire_segment=true
 - 调整段落或列表格式时，也必须先确认 segment_id；不要在未定位的情况下直接改样式、对齐、缩进、间距或列表层级
+- 任何除 lists.create 之外的列表操作都只能用于“已经是列表项”的段落；如果当前是普通段落，必须先用 apply_formatting + operation=lists.create 创建列表，再做 lists.setType / lists.applyPreset / lists.setLevel 等细化
 - 如果要使用较少见的格式属性、段落样式或列表预设，先调用 get_formatting_capabilities 确认当前 SuperDoc 版本支持的 operation 和字段
+- 如果一次要做多处结构化修改，优先考虑 preview_mutations / apply_mutations；先预演，再正式应用
+- 纯格式整理、排版收紧、标题样式统一、段落间距/缩进/列表样式调整这类任务，优先直接用 apply_formatting；如果 preview_mutations 已失败，不要重复几乎相同的预演，改用更小粒度的格式操作
+- 需要更通用的节点/文本发现时，用 query_match；但普通正文改写仍优先走 find_text_context + replace_text
 - 修改表格、金额、选项、审批字段时，必须结合所在单元格、相邻标签和前后文判断，不能只看裸文本
 - 修改标题时优先使用 set_document_title
 - 需要精确改写正文时使用 replace_text，target 必须是文档里真实存在的文本，并且必须带上定位到的上下文
+- 新增正文或小节时，优先使用 insert_paragraph_relative / insert_heading_relative，而不是把整段内容拼接进 replace_text
+- 新建表格时优先使用 create_table_relative；读取表格结构用 get_table_details；填写单元格优先使用 set_table_cell_text 或批量 apply_mutations
+- 用户要批注文档时，先定位目标文本，再用 add_comment_on_text；查看历史批注用 list_comments；回复线程用 reply_to_comment；解决批注用 resolve_comment
+- 用户要审阅修订时，使用 list_tracked_changes / decide_tracked_change，不要把“接受修订”理解成普通文本改写
+- 用户要给现有文字加链接时，先定位真实文本，再用 wrap_text_with_link；查看已有链接用 list_hyperlinks
 - 涉及插图时，先理解图片和用户意图，再调用 find_insertion_anchor；如果候选位置多于一个，不要插图，先向用户确认
 - 插图默认是块级图片；除非图像明显属于 logo、头像、签名、印章、二维码，否则优先补一条简短 caption
 - caption 先复用文档已有“图/Figure”风格；如果没有现成规范，默认使用“图 N：标题”
@@ -69,14 +97,31 @@ def build_system_prompt(*, suggest: bool) -> str:
 
 当前可用工具：
 - get_document_text：读取当前 Word 文档的结构化上下文快照
+- get_document_markdown：读取当前文档的 Markdown 视图，适合总结、导出或大段文本检查
 - get_formatting_capabilities：读取当前 SuperDoc 版本支持的格式能力
 - find_text_context：先定位目标文本，获取命中片段和前后文
+- query_match：执行更通用的官方 selector 查询，可用于精确发现文本/节点
+- preview_mutations：预演官方 mutation plan，不实际写入
+- apply_mutations：原子执行官方 mutation plan，适合批量结构化修改
 - find_insertion_anchor：根据自然语言意图定位图片应插入的正文锚点
 - list_caption_conventions：读取当前文档已有图片标题样式
 - insert_image_at_anchor：把图片插入正文锚点，并可自动补图片标题
 - set_document_title：设置 Word 文档唯一主标题
 - replace_text：只在已确认片段内做精确替换
+- insert_paragraph_relative：在已确认片段前后插入新段落
+- insert_heading_relative：在已确认片段前后插入新标题
 - append_paragraph：在文档正文末尾追加段落
+- create_table_relative：在已确认片段前后新建表格
+- get_table_details：读取指定表格的结构、单元格与属性
+- set_table_cell_text：按表格/行/列写入单元格文本
+- list_comments：查看当前文档批注/评论线程
+- add_comment_on_text：在已确认文本上新增批注
+- reply_to_comment：回复现有批注线程
+- resolve_comment：将批注标记为已解决
+- list_tracked_changes：查看当前文档修订列表
+- decide_tracked_change：接受或拒绝单条/全部修订
+- list_hyperlinks：查看当前文档链接
+- wrap_text_with_link：把已确认文本包装成超链接
 - apply_formatting：在已确认片段内调整字符、段落或列表格式
 
 工作方式：
@@ -86,7 +131,16 @@ def build_system_prompt(*, suggest: bool) -> str:
 - 所有正文修改都要先调用 find_text_context，确认 segment_id、所在结构、前后文，再执行最小必要改动
 - 调整字符格式时，必须先确认 segment_id；如果只改片段中的某几个字，必须带上 target_text 与上下文；只有在明确要改整个片段时，才能使用 apply_to_entire_segment=true
 - 调整段落或列表格式时，也必须先确认 segment_id；不要在未定位的情况下直接改样式、对齐、缩进、间距或列表层级
+- 任何除 lists.create 之外的列表操作都只能用于“已经是列表项”的段落；如果当前是普通段落，必须先用 apply_formatting + operation=lists.create 创建列表，再做 lists.setType / lists.applyPreset / lists.setLevel 等细化
 - 如果要使用较少见的格式属性、段落样式或列表预设，先调用 get_formatting_capabilities 确认当前 SuperDoc 版本支持的 operation 和字段
+- 如果一次要做多处结构化修改，优先考虑 preview_mutations / apply_mutations；先预演，再正式应用
+- 纯格式整理、排版收紧、标题样式统一、段落间距/缩进/列表样式调整这类任务，优先直接用 apply_formatting；如果 preview_mutations 已失败，不要重复几乎相同的预演，改用更小粒度的格式操作
+- 需要更通用的节点/文本发现时，用 query_match；但普通正文改写仍优先走 find_text_context + replace_text
+- 新增正文或小节时，优先使用 insert_paragraph_relative / insert_heading_relative，而不是把整段内容拼接进 replace_text
+- 新建表格时优先使用 create_table_relative；读取表格结构用 get_table_details；填写单元格优先使用 set_table_cell_text 或批量 apply_mutations
+- 用户要批注文档时，先定位目标文本，再用 add_comment_on_text；查看历史批注用 list_comments；回复线程用 reply_to_comment；解决批注用 resolve_comment
+- 用户要审阅修订时，使用 list_tracked_changes / decide_tracked_change，不要把“接受修订”理解成普通文本改写
+- 用户要给现有文字加链接时，先定位真实文本，再用 wrap_text_with_link；查看已有链接用 list_hyperlinks
 - 涉及插图时，先理解图片内容和用户意图，再调用 find_insertion_anchor 选择正文锚点
 - 如果 find_insertion_anchor 返回多个合理候选，不要继续插图，直接向用户确认具体位置
 - 插图后优先补 caption；logo、头像、签名、印章、二维码这类图片可不加
@@ -222,6 +276,9 @@ async def run_agent_loop(
                 if "errorCode" in tool_response and tool_response["errorCode"] is not None:
                     enriched_result["error_code"] = tool_response["errorCode"]
                     model_result["error_code"] = tool_response["errorCode"]
+                if "errorDetails" in tool_response and tool_response["errorDetails"] is not None:
+                    enriched_result["error_details"] = tool_response["errorDetails"]
+                    model_result["error_details"] = tool_response["errorDetails"]
                 if "candidates" in tool_response and tool_response["candidates"] is not None:
                     enriched_result["candidates"] = tool_response["candidates"]
                     model_result["candidates"] = tool_response["candidates"]
@@ -248,6 +305,22 @@ async def run_agent_loop(
                     model_result["next_step_guidance"] = (
                         "Stop editing. Ask the user to confirm the exact Word segment using the returned candidates."
                     )
+                elif enriched_result.get("error_code") == "invalid_target_state":
+                    error_details = enriched_result.get("error_details") or {}
+                    suggested_operation = ""
+                    if isinstance(error_details, dict):
+                        suggested_operation = str(error_details.get("suggested_operation") or "").strip()
+                    if tool_name == "apply_formatting" and suggested_operation == "lists.create":
+                        model_result["next_step_guidance"] = (
+                            "The segment was found, but this list operation only works on existing list items. "
+                            "Call apply_formatting again on the same segment_id with operation='lists.create' first, "
+                            "then apply any follow-up list formatting only if needed."
+                        )
+                    else:
+                        model_result["next_step_guidance"] = (
+                            "The segment was found, but this operation does not fit the current target state. "
+                            "Adjust the tool choice or operation and try again without asking the user yet."
+                        )
                 elif tool_name == "replace_text" and enriched_result.get("replacements") == 0:
                     model_result["next_step_guidance"] = (
                         "The target text was not found. Do not repeat the same replace_text call."
@@ -256,6 +329,11 @@ async def run_agent_loop(
                     model_result["next_step_guidance"] = (
                         "This is a structured Word .docx snapshot. Before any body edit, call find_text_context "
                         "to locate the exact segment_id and nearby context."
+                    )
+                elif tool_name == "get_document_markdown":
+                    model_result["next_step_guidance"] = (
+                        "Use this Markdown view for summarization or broad inspection. For precise edits, still rely on "
+                        "get_document_text and find_text_context."
                     )
                 elif tool_name == "get_formatting_capabilities":
                     model_result["next_step_guidance"] = (
@@ -266,6 +344,45 @@ async def run_agent_loop(
                     model_result["next_step_guidance"] = (
                         "Use the returned segment_id plus context_before/context_after for the next mutation. "
                         "If there are multiple matches, ask the user which one to edit."
+                    )
+                elif tool_name == "query_match":
+                    model_result["next_step_guidance"] = (
+                        "This is the lower-level selector query layer. Reuse resolved addresses or segment-scoped queries for "
+                        "precise structural edits and mutation plans."
+                    )
+                elif tool_name == "preview_mutations":
+                    preview_output = enriched_result.get("result")
+                    preview_valid = False
+                    if isinstance(preview_output, dict):
+                        preview_valid = bool(preview_output.get("valid"))
+                    if preview_valid:
+                        model_result["next_step_guidance"] = (
+                            "Inspect valid/failures and resolved targets first. Only call apply_mutations after the preview shows "
+                            "the intended steps and target resolution."
+                        )
+                    else:
+                        model_result["next_step_guidance"] = (
+                            "This preview failed. Do not repeat a nearly identical preview_mutations call. "
+                            "For simple formatting or confirmed segment edits, switch to apply_formatting or a smaller targeted edit."
+                        )
+                elif tool_name == "get_table_details":
+                    model_result["next_step_guidance"] = (
+                        "Use the returned rows, columns, and cell info to decide which table cell or table mutation to apply next."
+                    )
+                elif tool_name == "list_comments":
+                    model_result["next_step_guidance"] = (
+                        "Use comment_id values for reply_to_comment or resolve_comment. To add a new anchored comment, first "
+                        "locate exact text with find_text_context."
+                    )
+                elif tool_name == "list_tracked_changes":
+                    model_result["next_step_guidance"] = (
+                        "Use change ids with decide_tracked_change, or set apply_to_all=true when the user clearly wants to "
+                        "accept or reject all revisions."
+                    )
+                elif tool_name == "list_hyperlinks":
+                    model_result["next_step_guidance"] = (
+                        "Inspect existing links here. To add a link to current text, first locate the exact text span and then "
+                        "call wrap_text_with_link."
                     )
                 elif tool_name == "find_insertion_anchor":
                     anchor_candidates = enriched_result.get("anchor_candidates") or []
@@ -283,7 +400,8 @@ async def run_agent_loop(
                     )
 
                 result_str = json.dumps(model_result, ensure_ascii=False)
-                is_structured_error = enriched_result.get("error_code") in STRUCTURED_STOP_ERROR_CODES
+                is_structured_error = enriched_result.get("error_code") in STRUCTURED_ERROR_CODES
+                requires_user_resolution = enriched_result.get("error_code") in STRUCTURED_STOP_ERROR_CODES
                 await ws.send_json({
                     "type": "tool_result",
                     "tool": tool_name,
@@ -293,6 +411,7 @@ async def run_agent_loop(
                     "reload_required": bool(tool_response.get("reloadRequired", False)),
                     "tracked_changes_summary": tool_response.get("trackedChangesSummary"),
                     "error_code": tool_response.get("errorCode"),
+                    "error_details": tool_response.get("errorDetails"),
                     "candidates": tool_response.get("candidates"),
                     "anchor_candidates": tool_response.get("anchorCandidates"),
                     "selected_anchor": tool_response.get("selectedAnchor"),
@@ -314,7 +433,13 @@ async def run_agent_loop(
                         pending_user_message=user_message,
                         pending_attachments=attachments,
                     )
-                if is_structured_error:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result_str,
+                })
+                litellm_kwargs["messages"] = messages
+                if requires_user_resolution:
                     content = _build_context_resolution_message(tool_name, enriched_result)
                     await ws.send_json({
                         "type": "ai_message",
@@ -330,12 +455,12 @@ async def run_agent_loop(
                     "status": "error",
                     "result": {"error": str(e)},
                 })
-
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result_str,
-            })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result_str,
+                })
+                litellm_kwargs["messages"] = messages
 
     await ws.send_json({
         "type": "ai_message",

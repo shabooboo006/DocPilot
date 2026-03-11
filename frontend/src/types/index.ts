@@ -68,6 +68,7 @@ export interface ChatWsMessage {
   reload_required?: boolean;
   tracked_changes_summary?: Record<string, unknown>;
   error_code?: string;
+  error_details?: Record<string, unknown>;
   candidates?: Record<string, unknown>[];
   attachments?: ChatAttachment[];
   anchor_candidates?: AnchorCandidate[];

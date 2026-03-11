@@ -42,6 +42,7 @@ export function useChatWebSocket(documentId: string | null) {
             reload_required: data.reload_required,
             tracked_changes_summary: data.tracked_changes_summary,
             error_code: data.error_code,
+            error_details: data.error_details,
             candidates: data.candidates,
             anchor_candidates: data.anchor_candidates,
             selected_anchor: data.selected_anchor,

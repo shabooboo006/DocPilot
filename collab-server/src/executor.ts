@@ -37,7 +37,7 @@ type TrackChangesSummary = {
 };
 
 type SegmentKind = 'title' | 'paragraph' | 'table_cell';
-type ToolErrorCode = 'ambiguous_match' | 'insufficient_context' | 'title_not_unique';
+type ToolErrorCode = 'ambiguous_match' | 'insufficient_context' | 'title_not_unique' | 'invalid_target_state';
 type ParagraphNodeType = 'paragraph' | 'heading' | 'listItem';
 
 type ParagraphInfo = {
@@ -128,6 +128,7 @@ type DispatchResult = {
   trackedChangesSummary?: TrackChangesSummary;
   errorCode?: ToolErrorCode;
   candidates?: MatchCandidate[];
+  errorDetails?: Record<string, unknown>;
   anchorCandidates?: AnchorCandidate[];
   selectedAnchor?: AnchorCandidate;
   assetId?: string;
@@ -142,12 +143,19 @@ type DispatchResult = {
 class StructuredToolError extends Error {
   errorCode: ToolErrorCode;
   candidates: MatchCandidate[];
+  details: Record<string, unknown>;
 
-  constructor(errorCode: ToolErrorCode, message: string, candidates: MatchCandidate[] = []) {
+  constructor(
+    errorCode: ToolErrorCode,
+    message: string,
+    candidates: MatchCandidate[] = [],
+    details: Record<string, unknown> = {},
+  ) {
     super(message);
     this.name = 'StructuredToolError';
     this.errorCode = errorCode;
     this.candidates = candidates;
+    this.details = details;
   }
 }
 
@@ -270,6 +278,17 @@ const BASE_TOOLS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'get_document_markdown',
+      description: 'Read the current Word document as Markdown for summaries, exports, or broader text inspection.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_formatting_capabilities',
       description: 'Inspect the current SuperDoc formatting capabilities for inline text, paragraphs, and lists.',
       parameters: {
@@ -296,6 +315,110 @@ const BASE_TOOLS: ToolDefinition[] = [
           },
         },
         required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'query_match',
+      description: 'Run a selector-based official SuperDoc query.match search, optionally scoped to one confirmed segment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          select_text: {
+            type: 'string',
+            description: 'Text pattern to match.',
+          },
+          select_text_mode: {
+            type: 'string',
+            enum: ['contains', 'regex'],
+            description: 'Text selector mode. Defaults to contains.',
+          },
+          select_case_sensitive: {
+            type: 'boolean',
+            description: 'Whether text matching is case-sensitive. Defaults to false.',
+          },
+          select_node_type: {
+            type: 'string',
+            description: 'Optional node type selector for node queries, for example paragraph, heading, table, image.',
+          },
+          select_kind: {
+            type: 'string',
+            enum: ['block', 'inline'],
+            description: 'Node selector kind. Defaults to block.',
+          },
+          within_segment_id: {
+            type: 'string',
+            description: 'Optional confirmed segment_id used as the within scope.',
+          },
+          require: {
+            type: 'string',
+            enum: ['any', 'first', 'exactlyOne', 'all'],
+            description: 'Cardinality contract. Defaults to any.',
+          },
+          mode: {
+            type: 'string',
+            enum: ['strict', 'candidates'],
+            description: 'Query resolution mode. Defaults to strict.',
+          },
+          include_nodes: {
+            type: 'boolean',
+            description: 'Whether to include node payloads in results.',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Maximum number of results to return.',
+          },
+          offset: {
+            type: 'integer',
+            description: 'Pagination offset.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'preview_mutations',
+      description: 'Dry-run an official SuperDoc mutations plan without applying it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          plan: {
+            type: 'object',
+            description: 'Official SuperDoc mutations.preview input object.',
+            properties: {},
+          },
+          default_within_segment_id: {
+            type: 'string',
+            description: 'Optional segment_id used as the default within scope for plan steps that omit it.',
+          },
+        },
+        required: ['plan'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'apply_mutations',
+      description: 'Apply an official SuperDoc mutations plan atomically.',
+      parameters: {
+        type: 'object',
+        properties: {
+          plan: {
+            type: 'object',
+            description: 'Official SuperDoc mutations.apply input object.',
+            properties: {},
+          },
+          default_within_segment_id: {
+            type: 'string',
+            description: 'Optional segment_id used as the default within scope for plan steps that omit it.',
+          },
+        },
+        required: ['plan'],
       },
     },
   },
@@ -431,6 +554,64 @@ const BASE_TOOLS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'insert_paragraph_relative',
+      description: 'Insert a new paragraph before or after one confirmed Word segment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_id: {
+            type: 'string',
+            description: 'The confirmed segment_id returned by get_document_text or find_text_context.',
+          },
+          placement: {
+            type: 'string',
+            enum: ['before', 'after'],
+            description: 'Whether to insert before or after the confirmed segment. Defaults to after.',
+          },
+          text: {
+            type: 'string',
+            description: 'Paragraph text to insert.',
+          },
+        },
+        required: ['segment_id', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'insert_heading_relative',
+      description: 'Insert a new heading before or after one confirmed Word segment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_id: {
+            type: 'string',
+            description: 'The confirmed segment_id returned by get_document_text or find_text_context.',
+          },
+          placement: {
+            type: 'string',
+            enum: ['before', 'after'],
+            description: 'Whether to insert before or after the confirmed segment. Defaults to after.',
+          },
+          level: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 6,
+            description: 'Heading level from 1 to 6.',
+          },
+          text: {
+            type: 'string',
+            description: 'Heading text to insert.',
+          },
+        },
+        required: ['segment_id', 'level', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'append_paragraph',
       description: 'Append a new paragraph to the end of the Word document body.',
       parameters: {
@@ -442,6 +623,299 @@ const BASE_TOOLS: ToolDefinition[] = [
           },
         },
         required: ['text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_table_relative',
+      description: 'Create a new table before or after one confirmed Word segment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_id: {
+            type: 'string',
+            description: 'Confirmed segment_id used as the table anchor.',
+          },
+          placement: {
+            type: 'string',
+            enum: ['before', 'after'],
+            description: 'Whether to insert before or after the confirmed segment. Defaults to after.',
+          },
+          rows: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Row count.',
+          },
+          columns: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Column count.',
+          },
+        },
+        required: ['segment_id', 'rows', 'columns'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_table_details',
+      description: 'Read structure, cells, and properties of one table by table_index.',
+      parameters: {
+        type: 'object',
+        properties: {
+          table_index: {
+            type: 'integer',
+            minimum: 1,
+            description: '1-based table index from get_document_text.tables_summary.',
+          },
+        },
+        required: ['table_index'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_table_cell_text',
+      description: 'Replace the text contents of one table cell by table_index, row, and column.',
+      parameters: {
+        type: 'object',
+        properties: {
+          table_index: {
+            type: 'integer',
+            minimum: 1,
+            description: '1-based table index from get_document_text.tables_summary.',
+          },
+          row: {
+            type: 'integer',
+            minimum: 1,
+            description: '1-based row number.',
+          },
+          column: {
+            type: 'integer',
+            minimum: 1,
+            description: '1-based column number.',
+          },
+          text: {
+            type: 'string',
+            description: 'Replacement cell text.',
+          },
+        },
+        required: ['table_index', 'row', 'column', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_comments',
+      description: 'List document comments and review threads.',
+      parameters: {
+        type: 'object',
+        properties: {
+          include_resolved: {
+            type: 'boolean',
+            description: 'Whether to include resolved comments. Defaults to false.',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Maximum number of comments to return. Defaults to 20.',
+          },
+          offset: {
+            type: 'integer',
+            description: 'Pagination offset. Defaults to 0.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'add_comment_on_text',
+      description: 'Create a new comment anchored to one confirmed text span inside a Word segment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          comment: {
+            type: 'string',
+            description: 'Comment text to add.',
+          },
+          segment_id: {
+            type: 'string',
+            description: 'The confirmed segment_id returned by get_document_text or find_text_context.',
+          },
+          target_text: {
+            type: 'string',
+            description: 'Exact text to anchor the comment to inside the confirmed segment.',
+          },
+          context_before: {
+            type: 'string',
+            description: 'Nearby text immediately before target_text returned by find_text_context.',
+          },
+          context_after: {
+            type: 'string',
+            description: 'Nearby text immediately after target_text returned by find_text_context.',
+          },
+        },
+        required: ['comment', 'segment_id', 'target_text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reply_to_comment',
+      description: 'Reply to an existing comment thread by comment_id.',
+      parameters: {
+        type: 'object',
+        properties: {
+          comment_id: {
+            type: 'string',
+            description: 'Existing parent comment id.',
+          },
+          comment: {
+            type: 'string',
+            description: 'Reply text.',
+          },
+        },
+        required: ['comment_id', 'comment'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'resolve_comment',
+      description: 'Resolve an existing comment by comment_id.',
+      parameters: {
+        type: 'object',
+        properties: {
+          comment_id: {
+            type: 'string',
+            description: 'Existing comment id.',
+          },
+        },
+        required: ['comment_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_tracked_changes',
+      description: 'List tracked changes currently present in the document.',
+      parameters: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['insert', 'delete', 'format'],
+            description: 'Optional tracked change type filter.',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Maximum number of tracked changes to return. Defaults to 20.',
+          },
+          offset: {
+            type: 'integer',
+            description: 'Pagination offset. Defaults to 0.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'decide_tracked_change',
+      description: 'Accept or reject one tracked change by id, or all tracked changes at once.',
+      parameters: {
+        type: 'object',
+        properties: {
+          decision: {
+            type: 'string',
+            enum: ['accept', 'reject'],
+            description: 'Decision to apply.',
+          },
+          change_id: {
+            type: 'string',
+            description: 'Tracked change id. Omit only when apply_to_all=true.',
+          },
+          apply_to_all: {
+            type: 'boolean',
+            description: 'Whether to apply the decision to all tracked changes. Defaults to false.',
+          },
+        },
+        required: ['decision'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_hyperlinks',
+      description: 'List hyperlinks in the current Word document.',
+      parameters: {
+        type: 'object',
+        properties: {
+          href_pattern: {
+            type: 'string',
+            description: 'Optional URL substring filter.',
+          },
+          text_pattern: {
+            type: 'string',
+            description: 'Optional linked text substring filter.',
+          },
+          limit: {
+            type: 'integer',
+            description: 'Maximum number of hyperlinks to return. Defaults to 20.',
+          },
+          offset: {
+            type: 'integer',
+            description: 'Pagination offset. Defaults to 0.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wrap_text_with_link',
+      description: 'Wrap one confirmed text span inside a Word segment with a hyperlink.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_id: {
+            type: 'string',
+            description: 'The confirmed segment_id returned by get_document_text or find_text_context.',
+          },
+          target_text: {
+            type: 'string',
+            description: 'Exact existing text to wrap with a hyperlink.',
+          },
+          context_before: {
+            type: 'string',
+            description: 'Nearby text immediately before target_text returned by find_text_context.',
+          },
+          context_after: {
+            type: 'string',
+            description: 'Nearby text immediately after target_text returned by find_text_context.',
+          },
+          href: {
+            type: 'string',
+            description: 'External URL for the hyperlink.',
+          },
+          tooltip: {
+            type: 'string',
+            description: 'Optional tooltip text.',
+          },
+        },
+        required: ['segment_id', 'target_text', 'href'],
       },
     },
   },
@@ -517,10 +991,17 @@ export async function dispatchAgentTool({
 
   if (
     name === 'get_document_text'
+    || name === 'get_document_markdown'
     || name === 'get_formatting_capabilities'
     || name === 'find_text_context'
+    || name === 'query_match'
+    || name === 'preview_mutations'
     || name === 'find_insertion_anchor'
     || name === 'list_caption_conventions'
+    || name === 'get_table_details'
+    || name === 'list_comments'
+    || name === 'list_tracked_changes'
+    || name === 'list_hyperlinks'
   ) {
     const readEditor = await openReadEditor(source);
     try {
@@ -528,6 +1009,8 @@ export async function dispatchAgentTool({
       const result =
         name === 'get_document_text'
           ? getDocumentText(snapshot)
+          : name === 'get_document_markdown'
+            ? getDocumentMarkdown(readEditor, documentId)
           : name === 'get_formatting_capabilities'
             ? getFormattingCapabilities(readEditor)
           : name === 'find_text_context'
@@ -536,15 +1019,61 @@ export async function dispatchAgentTool({
               String(args.query ?? ''),
               Math.max(1, Number(args.max_results ?? 5) || 5),
             )
+            : name === 'query_match'
+              ? queryMatch(
+                readEditor,
+                snapshot,
+                documentId,
+                args,
+              )
+              : name === 'preview_mutations'
+                ? previewMutations(
+                  readEditor,
+                  snapshot,
+                  documentId,
+                  args.plan,
+                  String(args.default_within_segment_id ?? ''),
+                )
             : name === 'find_insertion_anchor'
               ? findInsertionAnchor(
                 snapshot,
-                String(args.intent ?? ''),
-                String(args.hint_text ?? ''),
-                String(args.asset_id ?? ''),
-                Math.max(1, Number(args.max_results ?? 5) || 5),
-              )
-              : listCaptionConventions(snapshot);
+              String(args.intent ?? ''),
+              String(args.hint_text ?? ''),
+              String(args.asset_id ?? ''),
+              Math.max(1, Number(args.max_results ?? 5) || 5),
+            )
+              : name === 'list_caption_conventions'
+                ? listCaptionConventions(snapshot)
+                : name === 'list_comments'
+                  ? listComments(
+                    readEditor,
+                    documentId,
+                    Boolean(args.include_resolved),
+                    Math.max(1, Number(args.limit ?? 20) || 20),
+                    Math.max(0, Number(args.offset ?? 0) || 0),
+                  )
+                  : name === 'get_table_details'
+                    ? getTableDetails(
+                      readEditor,
+                      documentId,
+                      Number(args.table_index ?? 0),
+                    )
+                    : name === 'list_tracked_changes'
+                    ? listTrackedChanges(
+                      readEditor,
+                      documentId,
+                      typeof args.type === 'string' ? args.type : undefined,
+                      Math.max(1, Number(args.limit ?? 20) || 20),
+                      Math.max(0, Number(args.offset ?? 0) || 0),
+                    )
+                    : listHyperlinks(
+                      readEditor,
+                      documentId,
+                      typeof args.href_pattern === 'string' ? args.href_pattern : '',
+                      typeof args.text_pattern === 'string' ? args.text_pattern : '',
+                      Math.max(1, Number(args.limit ?? 20) || 20),
+                      Math.max(0, Number(args.offset ?? 0) || 0),
+                    );
 
       return {
         result,
@@ -609,8 +1138,123 @@ export async function dispatchAgentTool({
           );
           documentMutated = (result.replacements as number) > 0;
           break;
+        case 'insert_paragraph_relative':
+          result = insertParagraphRelative(
+            mutationEditor,
+            snapshot,
+            documentId,
+            String(args.segment_id ?? ''),
+            normalizeBeforeAfterPlacement(args.placement),
+            String(args.text ?? ''),
+            mode,
+          );
+          documentMutated = true;
+          break;
+        case 'insert_heading_relative':
+          result = insertHeadingRelative(
+            mutationEditor,
+            snapshot,
+            documentId,
+            String(args.segment_id ?? ''),
+            normalizeBeforeAfterPlacement(args.placement),
+            Number(args.level ?? 0),
+            String(args.text ?? ''),
+            mode,
+          );
+          documentMutated = true;
+          break;
         case 'append_paragraph':
           result = appendParagraph(mutationEditor, documentId, String(args.text ?? ''), mode);
+          documentMutated = true;
+          break;
+        case 'create_table_relative':
+          result = createTableRelative(
+            mutationEditor,
+            snapshot,
+            documentId,
+            String(args.segment_id ?? ''),
+            normalizeBeforeAfterPlacement(args.placement),
+            Number(args.rows ?? 0),
+            Number(args.columns ?? 0),
+            mode,
+          );
+          documentMutated = true;
+          break;
+        case 'set_table_cell_text':
+          result = setTableCellText(
+            mutationEditor,
+            documentId,
+            Number(args.table_index ?? 0),
+            Number(args.row ?? 0),
+            Number(args.column ?? 0),
+            String(args.text ?? ''),
+            mode,
+          );
+          documentMutated = true;
+          break;
+        case 'apply_mutations':
+          result = applyMutations(
+            mutationEditor,
+            snapshot,
+            documentId,
+            args.plan,
+            String(args.default_within_segment_id ?? ''),
+            mode,
+          );
+          documentMutated = Boolean((result as Record<string, unknown>).success);
+          break;
+        case 'add_comment_on_text':
+          result = addCommentOnText(
+            mutationEditor,
+            snapshot,
+            documentId,
+            String(args.comment ?? ''),
+            String(args.segment_id ?? ''),
+            String(args.target_text ?? ''),
+            String(args.context_before ?? ''),
+            String(args.context_after ?? ''),
+          );
+          documentMutated = true;
+          break;
+        case 'reply_to_comment':
+          result = replyToComment(
+            mutationEditor,
+            documentId,
+            String(args.comment_id ?? ''),
+            String(args.comment ?? ''),
+          );
+          documentMutated = true;
+          break;
+        case 'resolve_comment':
+          result = resolveComment(
+            mutationEditor,
+            documentId,
+            String(args.comment_id ?? ''),
+          );
+          documentMutated = true;
+          break;
+        case 'decide_tracked_change':
+          result = decideTrackedChange(
+            mutationEditor,
+            documentId,
+            String(args.decision ?? ''),
+            String(args.change_id ?? ''),
+            Boolean(args.apply_to_all),
+          );
+          documentMutated = true;
+          break;
+        case 'wrap_text_with_link':
+          result = wrapTextWithLink(
+            mutationEditor,
+            snapshot,
+            documentId,
+            String(args.segment_id ?? ''),
+            String(args.target_text ?? ''),
+            String(args.context_before ?? ''),
+            String(args.context_after ?? ''),
+            String(args.href ?? ''),
+            String(args.tooltip ?? ''),
+          );
           documentMutated = true;
           break;
         case 'apply_formatting':
@@ -641,6 +1285,7 @@ export async function dispatchAgentTool({
             error_code: error.errorCode,
             message: error.message,
             candidates: error.candidates,
+            error_details: error.details,
             mode,
           },
           documentMutated: false,
@@ -648,6 +1293,7 @@ export async function dispatchAgentTool({
           trackedChangesSummary: mode === 'suggesting' ? summarizeTrackedChanges(mutationEditor) : undefined,
           errorCode: error.errorCode,
           candidates: error.candidates,
+          errorDetails: error.details,
         };
       }
       throw error;
@@ -737,6 +1383,13 @@ function getDocumentText(snapshot: DocumentSnapshot): Record<string, unknown> {
   };
 }
 
+function getDocumentMarkdown(editor: HeadlessEditor, documentId: string): Record<string, unknown> {
+  return {
+    document_id: documentId,
+    markdown: editor.doc.getMarkdown({}),
+  };
+}
+
 function getFormattingCapabilities(editor: HeadlessEditor): Record<string, unknown> {
   const capabilities = (editor.doc as any).capabilities?.() as Record<string, unknown> | undefined;
   const format = isRecord(capabilities?.format) ? capabilities?.format : {};
@@ -778,6 +1431,39 @@ function findTextContext(
     query: trimmedQuery,
     match_count: matches.length,
     matches,
+  };
+}
+
+function queryMatch(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  rawArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const queryInput = buildQueryMatchInput(snapshot, rawArgs);
+  const result = editor.doc.query.match(queryInput);
+
+  return {
+    document_id: documentId,
+    query: queryInput,
+    result,
+  };
+}
+
+function previewMutations(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  plan: unknown,
+  defaultWithinSegmentId: string,
+): Record<string, unknown> {
+  const normalizedPlan = normalizeMutationPlan(snapshot, plan, defaultWithinSegmentId);
+  const result = editor.doc.mutations.preview(normalizedPlan);
+
+  return {
+    document_id: documentId,
+    plan: normalizedPlan,
+    result,
   };
 }
 
@@ -836,6 +1522,113 @@ function listCaptionConventions(snapshot: DocumentSnapshot): Record<string, unkn
     preferred_prefix: numberingStyle === 'figure' ? 'Figure' : '图',
     preferred_separator: separator,
     examples: captionSegments.slice(0, 3).map((segment) => segment.text),
+  };
+}
+
+function getTableDetails(
+  editor: HeadlessEditor,
+  documentId: string,
+  tableIndex: number,
+): Record<string, unknown> {
+  const tableTarget = resolveTableTargetByIndex(editor, tableIndex);
+  const structure = editor.doc.tables.get({ target: tableTarget });
+  const cells = editor.doc.tables.getCells({ target: tableTarget });
+  const properties = editor.doc.tables.getProperties({ target: tableTarget });
+
+  return {
+    document_id: documentId,
+    table_index: tableIndex,
+    structure,
+    cells,
+    properties,
+  };
+}
+
+function listComments(
+  editor: HeadlessEditor,
+  documentId: string,
+  includeResolved: boolean,
+  limit: number,
+  offset: number,
+): Record<string, unknown> {
+  const listing = editor.doc.comments.list({
+    includeResolved,
+    limit,
+    offset,
+  });
+  const items = Array.isArray((listing as any)?.items) ? (listing as any).items : [];
+
+  return {
+    document_id: documentId,
+    include_resolved: includeResolved,
+    total: typeof (listing as any)?.total === 'number' ? (listing as any).total : items.length,
+    items: items.map((item: Record<string, unknown>) => ({
+      comment_id: String(item.commentId ?? ''),
+      parent_comment_id: String(item.parentCommentId ?? ''),
+      status: String(item.status ?? 'open'),
+      text: String(item.text ?? ''),
+      anchored_text: String(item.anchoredText ?? ''),
+      creator_name: String(item.creatorName ?? ''),
+      created_time: item.createdTime ?? null,
+    })),
+  };
+}
+
+function listTrackedChanges(
+  editor: HeadlessEditor,
+  documentId: string,
+  type: string | undefined,
+  limit: number,
+  offset: number,
+): Record<string, unknown> {
+  const normalizedType = type === 'insert' || type === 'delete' || type === 'format' ? type : undefined;
+  const listing = editor.doc.trackChanges.list({
+    type: normalizedType,
+    limit,
+    offset,
+  });
+  const items = Array.isArray((listing as any)?.items) ? (listing as any).items : [];
+
+  return {
+    document_id: documentId,
+    type: normalizedType,
+    total: typeof (listing as any)?.total === 'number' ? (listing as any).total : items.length,
+    items: items.map((item: Record<string, unknown>) => ({
+      id: String(item.id ?? ''),
+      type: String(item.type ?? ''),
+      author: String(item.authorName ?? item.author ?? ''),
+      excerpt: String(item.excerpt ?? ''),
+      created_at: item.createdAt ?? item.date ?? null,
+      resolved: item.resolved ?? null,
+    })),
+  };
+}
+
+function listHyperlinks(
+  editor: HeadlessEditor,
+  documentId: string,
+  hrefPattern: string,
+  textPattern: string,
+  limit: number,
+  offset: number,
+): Record<string, unknown> {
+  const listing = editor.doc.hyperlinks.list({
+    hrefPattern: hrefPattern.trim() || undefined,
+    textPattern: textPattern.trim() || undefined,
+    limit,
+    offset,
+  });
+  const items = Array.isArray((listing as any)?.items) ? (listing as any).items : [];
+
+  return {
+    document_id: documentId,
+    total: typeof (listing as any)?.total === 'number' ? (listing as any).total : items.length,
+    items: items.map((item: Record<string, unknown>) => ({
+      text: String(item.text ?? ''),
+      href: String((item.properties as Record<string, unknown> | undefined)?.href ?? ''),
+      anchor: String((item.properties as Record<string, unknown> | undefined)?.anchor ?? ''),
+      tooltip: String((item.properties as Record<string, unknown> | undefined)?.tooltip ?? ''),
+    })),
   };
 }
 
@@ -984,6 +1777,90 @@ function replaceText(
   };
 }
 
+function insertParagraphRelative(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  segmentId: string,
+  placement: 'before' | 'after',
+  text: string,
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const trimmedText = text.trim();
+  if (!trimmedText) {
+    throw new Error('text must not be empty');
+  }
+
+  const segment = resolveSegment(snapshot, segmentId);
+  const targetParagraph = resolveAdjacentParagraphTarget(segment, placement);
+  const created = ensureSuccessfulResult(
+    'create.paragraph',
+    editor.doc.create.paragraph({
+      at: {
+        kind: placement,
+        target: toParagraphTarget(targetParagraph),
+      },
+      text: trimmedText,
+    }),
+  );
+
+  return {
+    document_id: documentId,
+    inserted: true,
+    placement,
+    segment_id: segment.segment_id,
+    location_label: segment.location_label,
+    text: trimmedText,
+    mode,
+    paragraph: created.paragraph ?? null,
+    insertion_point: created.insertionPoint ?? null,
+  };
+}
+
+function insertHeadingRelative(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  segmentId: string,
+  placement: 'before' | 'after',
+  level: number,
+  text: string,
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const trimmedText = text.trim();
+  if (!trimmedText) {
+    throw new Error('text must not be empty');
+  }
+
+  const segment = resolveSegment(snapshot, segmentId);
+  const targetParagraph = resolveAdjacentParagraphTarget(segment, placement);
+  const normalizedLevel = Math.max(1, Math.min(6, Math.trunc(level) || 1));
+  const created = ensureSuccessfulResult(
+    'create.heading',
+    editor.doc.create.heading({
+      level: normalizedLevel,
+      at: {
+        kind: placement,
+        target: toParagraphTarget(targetParagraph),
+      },
+      text: trimmedText,
+    }),
+  );
+
+  return {
+    document_id: documentId,
+    inserted: true,
+    placement,
+    segment_id: segment.segment_id,
+    location_label: segment.location_label,
+    text: trimmedText,
+    level: normalizedLevel,
+    mode,
+    heading: created.heading ?? null,
+    insertion_point: created.insertionPoint ?? null,
+  };
+}
+
 function applyFormatting(
   editor: HeadlessEditor,
   snapshot: DocumentSnapshot,
@@ -1090,9 +1967,14 @@ function applyFormatting(
     const nonListParagraph = paragraphInfos.find((paragraph) => paragraph.nodeType !== 'listItem');
     if (nonListParagraph) {
       throw new StructuredToolError(
-        'insufficient_context',
+        'invalid_target_state',
         '该列表格式操作只能作用于现有列表项。请先定位到已有列表项，或先使用 lists.create 创建列表。',
         [toSegmentMatchCandidate(segment)],
+        {
+          suggested_operation: 'lists.create',
+          same_segment_id: segment.segment_id,
+          same_location_label: segment.location_label,
+        },
       );
     }
   }
@@ -1142,6 +2024,277 @@ function appendParagraph(
     text: trimmedText,
     insertion_location: 'document_end',
     mode,
+  };
+}
+
+function createTableRelative(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  segmentId: string,
+  placement: 'before' | 'after',
+  rows: number,
+  columns: number,
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const segment = resolveSegment(snapshot, segmentId);
+  const targetParagraph = resolveAdjacentParagraphTarget(segment, placement);
+  const normalizedRows = Math.max(1, Math.trunc(rows) || 1);
+  const normalizedColumns = Math.max(1, Math.trunc(columns) || 1);
+  const created = ensureSuccessfulResult(
+    'create.table',
+    editor.doc.create.table({
+      rows: normalizedRows,
+      columns: normalizedColumns,
+      at: {
+        kind: placement,
+        target: toParagraphTarget(targetParagraph),
+      },
+    }),
+  );
+
+  return {
+    document_id: documentId,
+    created: true,
+    segment_id: segment.segment_id,
+    location_label: segment.location_label,
+    placement,
+    rows: normalizedRows,
+    columns: normalizedColumns,
+    mode,
+    table: created.table ?? null,
+  };
+}
+
+function setTableCellText(
+  editor: HeadlessEditor,
+  documentId: string,
+  tableIndex: number,
+  row: number,
+  column: number,
+  text: string,
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const normalizedTableIndex = Math.trunc(tableIndex);
+  const normalizedRow = Math.trunc(row);
+  const normalizedColumn = Math.trunc(column);
+  const trimmedText = text.trim();
+
+  if (normalizedTableIndex < 1 || normalizedRow < 1 || normalizedColumn < 1) {
+    throw new Error('table_index, row, and column must be 1-based positive integers');
+  }
+
+  const range = findTableCellContentRange(editor, normalizedTableIndex, normalizedRow, normalizedColumn);
+  if (!range) {
+    throw new StructuredToolError(
+      'insufficient_context',
+      `未找到表格${normalizedTableIndex} 第${normalizedRow}行 第${normalizedColumn}列。请先确认表格结构。`,
+    );
+  }
+
+  replaceRange(editor, range.from, range.to, trimmedText);
+
+  return {
+    document_id: documentId,
+    updated: true,
+    table_index: normalizedTableIndex,
+    row: normalizedRow,
+    column: normalizedColumn,
+    text: trimmedText,
+    location_label: `表格${normalizedTableIndex} 第${normalizedRow}行 第${normalizedColumn}列`,
+    mode,
+  };
+}
+
+function addCommentOnText(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  comment: string,
+  segmentId: string,
+  targetText: string,
+  contextBefore: string,
+  contextAfter: string,
+): Record<string, unknown> {
+  const trimmedComment = comment.trim();
+  if (!trimmedComment) {
+    throw new Error('comment must not be empty');
+  }
+
+  const { segment, target } = resolveSingleTextTarget(snapshot, segmentId, targetText, contextBefore, contextAfter);
+  const receipt = ensureSuccessfulResult(
+    'comments.create',
+    editor.doc.comments.create({
+      text: trimmedComment,
+      target,
+    }),
+  );
+
+  return {
+    document_id: documentId,
+    comment_added: true,
+    segment_id: segment.segment_id,
+    location_label: segment.location_label,
+    target_text: targetText.trim(),
+    comment: trimmedComment,
+    receipt,
+  };
+}
+
+function replyToComment(
+  editor: HeadlessEditor,
+  documentId: string,
+  commentId: string,
+  comment: string,
+): Record<string, unknown> {
+  const trimmedCommentId = commentId.trim();
+  const trimmedComment = comment.trim();
+
+  if (!trimmedCommentId) {
+    throw new Error('comment_id must not be empty');
+  }
+  if (!trimmedComment) {
+    throw new Error('comment must not be empty');
+  }
+
+  const receipt = ensureSuccessfulResult(
+    'comments.create',
+    editor.doc.comments.create({
+      parentCommentId: trimmedCommentId,
+      text: trimmedComment,
+    }),
+  );
+
+  return {
+    document_id: documentId,
+    replied: true,
+    comment_id: trimmedCommentId,
+    comment: trimmedComment,
+    receipt,
+  };
+}
+
+function resolveComment(
+  editor: HeadlessEditor,
+  documentId: string,
+  commentId: string,
+): Record<string, unknown> {
+  const trimmedCommentId = commentId.trim();
+  if (!trimmedCommentId) {
+    throw new Error('comment_id must not be empty');
+  }
+
+  const receipt = ensureSuccessfulResult(
+    'comments.patch',
+    editor.doc.comments.patch({
+      commentId: trimmedCommentId,
+      status: 'resolved',
+    }),
+  );
+
+  return {
+    document_id: documentId,
+    resolved: true,
+    comment_id: trimmedCommentId,
+    receipt,
+  };
+}
+
+function decideTrackedChange(
+  editor: HeadlessEditor,
+  documentId: string,
+  decision: string,
+  changeId: string,
+  applyToAll: boolean,
+): Record<string, unknown> {
+  const normalizedDecision = decision === 'accept' || decision === 'reject' ? decision : '';
+  if (!normalizedDecision) {
+    throw new Error('decision must be "accept" or "reject"');
+  }
+
+  const trimmedChangeId = changeId.trim();
+  if (!applyToAll && !trimmedChangeId) {
+    throw new Error('change_id must not be empty unless apply_to_all=true');
+  }
+
+  const receipt = ensureSuccessfulResult(
+    'trackChanges.decide',
+    editor.doc.trackChanges.decide({
+      decision: normalizedDecision,
+      target: applyToAll ? { scope: 'all' } : { id: trimmedChangeId },
+    }),
+  );
+
+  return {
+    document_id: documentId,
+    decision: normalizedDecision,
+    change_id: applyToAll ? null : trimmedChangeId,
+    apply_to_all: applyToAll,
+    receipt,
+  };
+}
+
+function wrapTextWithLink(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  segmentId: string,
+  targetText: string,
+  contextBefore: string,
+  contextAfter: string,
+  href: string,
+  tooltip: string,
+): Record<string, unknown> {
+  const trimmedHref = href.trim();
+  if (!trimmedHref) {
+    throw new Error('href must not be empty');
+  }
+
+  const { segment, target } = resolveSingleTextTarget(snapshot, segmentId, targetText, contextBefore, contextAfter);
+  const receipt = ensureSuccessfulResult(
+    'hyperlinks.wrap',
+    editor.doc.hyperlinks.wrap({
+      target,
+      link: {
+        destination: {
+          href: trimmedHref,
+        },
+        tooltip: tooltip.trim() || undefined,
+      },
+    }),
+  );
+
+  return {
+    document_id: documentId,
+    wrapped: true,
+    segment_id: segment.segment_id,
+    location_label: segment.location_label,
+    target_text: targetText.trim(),
+    href: trimmedHref,
+    tooltip: tooltip.trim() || undefined,
+    receipt,
+  };
+}
+
+function applyMutations(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  plan: unknown,
+  defaultWithinSegmentId: string,
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const normalizedPlan = normalizeMutationPlan(snapshot, plan, defaultWithinSegmentId);
+  const result = ensureSuccessfulResult(
+    'mutations.apply',
+    editor.doc.mutations.apply(normalizedPlan),
+  );
+
+  return {
+    document_id: documentId,
+    mode,
+    plan: normalizedPlan,
+    ...result,
   };
 }
 
@@ -1570,6 +2723,10 @@ function normalizePlacement(value: unknown): 'before' | 'after' | 'replace_place
   return 'after';
 }
 
+function normalizeBeforeAfterPlacement(value: unknown): 'before' | 'after' {
+  return value === 'before' ? 'before' : 'after';
+}
+
 function normalizeCaptionMode(value: unknown): 'auto' | 'always' | 'none' {
   if (value === 'auto' || value === 'always' || value === 'none') {
     return value;
@@ -1631,6 +2788,86 @@ function normalizeFormattingArgs(
   }
   if (operation === 'lists.setLevelRestart' && normalized.restart == null && normalized.restart_numbering != null) {
     normalized.restart = normalized.restart_numbering;
+  }
+
+  return normalized;
+}
+
+function buildQueryMatchInput(
+  snapshot: DocumentSnapshot,
+  rawArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const selectText = String(rawArgs.select_text ?? '').trim();
+  const selectNodeType = String(rawArgs.select_node_type ?? '').trim();
+
+  let select: Record<string, unknown> | null = null;
+  if (selectText) {
+    select = {
+      type: 'text',
+      pattern: selectText,
+      mode: rawArgs.select_text_mode === 'regex' ? 'regex' : 'contains',
+      caseSensitive: Boolean(rawArgs.select_case_sensitive),
+    };
+  } else if (selectNodeType) {
+    select = {
+      type: 'node',
+      nodeType: selectNodeType,
+      kind: rawArgs.select_kind === 'inline' ? 'inline' : 'block',
+    };
+  }
+
+  if (!select) {
+    throw new Error('query_match requires either select_text or select_node_type');
+  }
+
+  const input: Record<string, unknown> = { select };
+  const within = resolveOptionalWithinTarget(snapshot, String(rawArgs.within_segment_id ?? ''));
+  if (within) {
+    input.within = within;
+  }
+  if (rawArgs.require === 'first' || rawArgs.require === 'exactlyOne' || rawArgs.require === 'all' || rawArgs.require === 'any') {
+    input.require = rawArgs.require;
+  }
+  if (rawArgs.mode === 'strict' || rawArgs.mode === 'candidates') {
+    input.mode = rawArgs.mode;
+  }
+  if (rawArgs.include_nodes != null) {
+    input.includeNodes = Boolean(rawArgs.include_nodes);
+  }
+  if (rawArgs.limit != null) {
+    input.limit = Math.max(1, Number(rawArgs.limit) || 1);
+  }
+  if (rawArgs.offset != null) {
+    input.offset = Math.max(0, Number(rawArgs.offset) || 0);
+  }
+
+  return input;
+}
+
+function normalizeMutationPlan(
+  snapshot: DocumentSnapshot,
+  plan: unknown,
+  defaultWithinSegmentId: string,
+): Record<string, unknown> {
+  if (!isRecord(plan)) {
+    throw new Error('plan must be an object');
+  }
+
+  const normalized = structuredClone(plan) as Record<string, unknown>;
+  const defaultWithin = resolveOptionalWithinTarget(snapshot, defaultWithinSegmentId);
+  const steps = Array.isArray(normalized.steps) ? normalized.steps : [];
+
+  if (defaultWithin) {
+    for (const rawStep of steps) {
+      if (!isRecord(rawStep)) {
+        continue;
+      }
+      const where = rawStep.where;
+      if (!isRecord(where) || where.within != null) {
+        continue;
+      }
+      where.within = defaultWithin;
+    }
   }
 
   return normalized;
@@ -1726,6 +2963,63 @@ function resolveInlineFormattingTargets(
   });
 }
 
+function resolveSingleTextTarget(
+  snapshot: DocumentSnapshot,
+  segmentId: string,
+  targetText: string,
+  contextBefore: string,
+  contextAfter: string,
+): { segment: InternalSegment; target: Record<string, unknown> } {
+  const segment = resolveSegment(snapshot, segmentId);
+  const targets = resolveInlineFormattingTargets(
+    segment,
+    targetText,
+    contextBefore,
+    contextAfter,
+    false,
+    false,
+  );
+
+  return {
+    segment,
+    target: targets[0],
+  };
+}
+
+function resolveOptionalWithinTarget(
+  snapshot: DocumentSnapshot,
+  segmentId: string,
+): Record<string, unknown> | undefined {
+  const trimmedSegmentId = segmentId.trim();
+  if (!trimmedSegmentId) {
+    return undefined;
+  }
+
+  const segment = resolveSegment(snapshot, trimmedSegmentId);
+  const targetParagraph = resolveAdjacentParagraphTarget(segment, 'before');
+  return toParagraphTarget(targetParagraph);
+}
+
+function resolveSegment(
+  snapshot: DocumentSnapshot,
+  segmentId: string,
+): InternalSegment {
+  const trimmedSegmentId = segmentId.trim();
+  if (!trimmedSegmentId) {
+    throw new StructuredToolError('insufficient_context', '缺少 segment_id。请先确认具体要操作的 Word 片段。');
+  }
+
+  const segment = snapshot.internalSegments.find((item) => item.segment_id === trimmedSegmentId);
+  if (!segment) {
+    throw new StructuredToolError(
+      'insufficient_context',
+      `未找到 segment_id=${trimmedSegmentId} 对应的 Word 片段。请重新定位。`,
+    );
+  }
+
+  return segment;
+}
+
 function getSegmentParagraphInfos(segment: InternalSegment): ParagraphInfo[] {
   const seen = new Set<string>();
 
@@ -1737,6 +3031,22 @@ function getSegmentParagraphInfos(segment: InternalSegment): ParagraphInfo[] {
     seen.add(key);
     return true;
   });
+}
+
+function resolveAdjacentParagraphTarget(
+  segment: InternalSegment,
+  placement: 'before' | 'after',
+): ParagraphInfo {
+  const paragraphs = getSegmentParagraphInfos(segment);
+  if (paragraphs.length === 0) {
+    throw new StructuredToolError(
+      'insufficient_context',
+      '未找到可定位的段落块，请先重新定位该片段后再试。',
+      [toSegmentMatchCandidate(segment)],
+    );
+  }
+
+  return placement === 'before' ? paragraphs[0] : paragraphs[paragraphs.length - 1];
 }
 
 function toParagraphTarget(paragraph: ParagraphInfo): Record<string, unknown> {
@@ -1815,10 +3125,59 @@ function invokeFormattingOperation(
   return isRecord(result) ? result : { value: result };
 }
 
+function ensureSuccessfulResult<T extends Record<string, unknown>>(operation: string, result: T): T {
+  if (isFailedReceipt(result)) {
+    throw new Error(result.failure.message || result.failure.code || `SuperDoc operation failed: ${operation}`);
+  }
+
+  return result;
+}
+
 function isFailedReceipt(
   value: unknown,
 ): value is { success: false; failure: { message?: string; code?: string } } {
   return isRecord(value) && value.success === false && isRecord(value.failure);
+}
+
+function resolveTableTargetByIndex(
+  editor: HeadlessEditor,
+  tableIndex: number,
+): Record<string, unknown> {
+  const normalizedTableIndex = Math.trunc(tableIndex);
+  if (normalizedTableIndex < 1) {
+    throw new Error('table_index must be a positive integer');
+  }
+
+  let currentTableIndex = 0;
+  let found: Record<string, unknown> | null = null;
+
+  editor.state.doc.forEach((node: any) => {
+    if (found || node.type?.name !== 'table') {
+      return;
+    }
+
+    currentTableIndex += 1;
+    if (currentTableIndex !== normalizedTableIndex) {
+      return;
+    }
+
+    const nodeId = String(node.attrs?.sdBlockId ?? '').trim();
+    if (!nodeId) {
+      throw new Error(`Unable to resolve node id for table ${normalizedTableIndex}`);
+    }
+
+    found = {
+      kind: 'block',
+      nodeType: 'table',
+      nodeId,
+    };
+  });
+
+  if (!found) {
+    throw new Error(`Table not found: ${normalizedTableIndex}`);
+  }
+
+  return found;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {
@@ -2026,6 +3385,40 @@ function findTableCellParagraphRange(
   });
 
   return found;
+}
+
+function findTableCellContentRange(
+  editor: HeadlessEditor,
+  tableIndex: number,
+  row: number,
+  column: number,
+): { from: number; to: number } | null {
+  let firstParagraphRange: { from: number; to: number } | null = null;
+  let lastParagraphRange: { from: number; to: number } | null = null;
+
+  for (let paragraphIndex = 0; paragraphIndex < 32; paragraphIndex += 1) {
+    const range = findTableCellParagraphRange(
+      editor,
+      `table:${tableIndex}:row:${row}:col:${column}`,
+      paragraphIndex,
+    );
+    if (!range) {
+      break;
+    }
+    if (!firstParagraphRange) {
+      firstParagraphRange = range;
+    }
+    lastParagraphRange = range;
+  }
+
+  if (!firstParagraphRange || !lastParagraphRange) {
+    return null;
+  }
+
+  return {
+    from: firstParagraphRange.from,
+    to: lastParagraphRange.to,
+  };
 }
 
 function findParagraphRangeByBlockId(

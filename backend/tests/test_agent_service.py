@@ -70,6 +70,15 @@ def test_build_system_prompt_mentions_proposal_only_in_suggest_mode():
     assert "find_text_context" in prompt
     assert "apply_formatting" in prompt
     assert "get_formatting_capabilities" in prompt
+    assert "insert_paragraph_relative" in prompt
+    assert "add_comment_on_text" in prompt
+    assert "list_tracked_changes" in prompt
+    assert "wrap_text_with_link" in prompt
+    assert "query_match" in prompt
+    assert "apply_mutations" in prompt
+    assert "create_table_relative" in prompt
+    assert "lists.create" in prompt
+    assert "纯格式整理" in prompt
 
 
 def test_build_system_prompt_keeps_direct_edit_prompt_for_non_suggest_mode():
@@ -83,6 +92,15 @@ def test_build_system_prompt_keeps_direct_edit_prompt_for_non_suggest_mode():
     assert "find_text_context" in prompt
     assert "apply_formatting" in prompt
     assert "get_formatting_capabilities" in prompt
+    assert "insert_heading_relative" in prompt
+    assert "list_comments" in prompt
+    assert "decide_tracked_change" in prompt
+    assert "list_hyperlinks" in prompt
+    assert "preview_mutations" in prompt
+    assert "get_table_details" in prompt
+    assert "set_table_cell_text" in prompt
+    assert "lists.create" in prompt
+    assert "纯格式整理" in prompt
 
 
 @pytest.mark.asyncio
@@ -274,6 +292,79 @@ async def test_run_agent_loop_stops_and_asks_user_on_structured_context_error():
     tool_result_event = [call.args[0] for call in mock_ws.send_json.await_args_list if call.args[0]["type"] == "tool_result"][0]
     assert tool_result_event["status"] == "error"
     assert tool_result_event["error_code"] == "ambiguous_match"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_loop_continues_after_recoverable_structured_error():
+    from app.services.agent_service import run_agent_loop
+
+    mock_ws = AsyncMock()
+    failing_tool_call = MagicMock()
+    failing_tool_call.id = "call-format"
+    failing_tool_call.function.name = "apply_formatting"
+    failing_tool_call.function.arguments = json.dumps({
+        "operation": "lists.setType",
+        "segment_id": "seg-10",
+        "args": {"kind": "ordered"},
+    }, ensure_ascii=False)
+
+    first_response = MagicMock()
+    first_response.choices[0].message.tool_calls = [failing_tool_call]
+    first_response.choices[0].message.model_dump.return_value = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call-format",
+                "type": "function",
+                "function": {
+                    "name": "apply_formatting",
+                    "arguments": failing_tool_call.function.arguments,
+                },
+            }
+        ],
+    }
+
+    final_response = MagicMock()
+    final_response.choices[0].message.tool_calls = None
+    final_response.choices[0].message.content = "已改用正确的列表创建步骤继续处理。"
+
+    with patch("app.services.agent_service.superdoc_service.get_session", new=AsyncMock(return_value=MagicMock())), \
+         patch("app.services.agent_service.superdoc_service.get_tools", new=AsyncMock(return_value=[])), \
+         patch(
+             "app.services.agent_service.superdoc_service.dispatch_tool",
+             new=AsyncMock(
+                 return_value={
+                     "result": {
+                         "message": "该列表格式操作只能作用于现有列表项。请先定位到已有列表项，或先使用 lists.create 创建列表。",
+                         "error_code": "invalid_target_state",
+                         "error_details": {"suggested_operation": "lists.create"},
+                     },
+                     "documentMutated": False,
+                     "reloadRequired": False,
+                     "trackedChangesSummary": {"total": 0},
+                     "errorCode": "invalid_target_state",
+                     "errorDetails": {"suggested_operation": "lists.create"},
+                 }
+             ),
+         ), \
+         patch("app.services.agent_service.litellm.acompletion", side_effect=[first_response, final_response]) as mock_completion:
+        result = await run_agent_loop(
+            document_id="abc123456789",
+            user_message="把资格要求整理成正式列表格式",
+            chat_history=[],
+            attachments=[],
+            ws=mock_ws,
+            suggest=True,
+        )
+
+    assert result.content == "已改用正确的列表创建步骤继续处理。"
+    assert mock_completion.await_count == 2
+    tool_result_event = [call.args[0] for call in mock_ws.send_json.await_args_list if call.args[0]["type"] == "tool_result"][0]
+    assert tool_result_event["status"] == "error"
+    assert tool_result_event["error_code"] == "invalid_target_state"
+    ai_messages = [call.args[0] for call in mock_ws.send_json.await_args_list if call.args[0]["type"] == "ai_message"]
+    assert ai_messages[-1]["content"] == "已改用正确的列表创建步骤继续处理。"
 
 
 @pytest.mark.asyncio
