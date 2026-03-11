@@ -2,22 +2,25 @@
   "name": "docpilot-collab-server",
   "version": "1.0.0",
   "type": "module",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@superdoc-dev/superdoc-yjs-collaboration": "^1.0.2",
-    "fastify": "^5",
     "@fastify/websocket": "^11",
+    "@superdoc-dev/superdoc-yjs-collaboration": "^1.0.2",
+    "dotenv": "^16",
+    "fastify": "^5",
     "minio": "^8",
-    "dotenv": "^16"
+    "yjs": "^13.6.29"
   },
   "devDependencies": {
-    "typescript": "^5",
     "@types/node": "^22",
-    "tsx": "^4"
+    "tsx": "^4",
+    "typescript": "^5"
   }
 }
