@@ -2,6 +2,7 @@ import uuid
 import json
 import boto3
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 from app.config import settings
 
 
@@ -23,8 +24,12 @@ BUCKET = settings.minio_bucket
 def ensure_bucket() -> None:
     try:
         s3.head_bucket(Bucket=BUCKET)
-    except Exception:
-        s3.create_bucket(Bucket=BUCKET)
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+        if error_code in ("NoSuchBucket", "404"):
+            s3.create_bucket(Bucket=BUCKET)
+        else:
+            raise
 
 
 def generate_id() -> str:
@@ -57,9 +62,11 @@ def download_document(document_id: str) -> bytes:
     return resp["Body"].read()
 
 
-def delete_document(document_id: str) -> None:
+def delete_document(document_id: str) -> bool:
     prefix = f"documents/{document_id}/"
     response = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
-    if "Contents" in response:
-        objects = [{"Key": obj["Key"]} for obj in response["Contents"]]
-        s3.delete_objects(Bucket=BUCKET, Delete={"Objects": objects})
+    if "Contents" not in response or not response["Contents"]:
+        return False
+    objects = [{"Key": obj["Key"]} for obj in response["Contents"]]
+    s3.delete_objects(Bucket=BUCKET, Delete={"Objects": objects})
+    return True
