@@ -1,0 +1,22 @@
+{
+  "name": "docpilot-collab-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@superdoc-dev/superdoc-yjs-collaboration": "latest",
+    "fastify": "^5",
+    "@fastify/websocket": "^11",
+    "minio": "^8",
+    "dotenv": "^16"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "@types/node": "^22",
+    "tsx": "^4"
+  }
+}
