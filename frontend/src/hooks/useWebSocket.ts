@@ -7,9 +7,20 @@ const WS_BASE = 'ws://localhost:6800';
 
 export function useChatWebSocket(documentId: string | null) {
   const ws = useRef<WebSocket | null>(null);
-  const { addMessage, updateToolCallStatus, setAIThinking } = useChatStore();
+  const {
+    addMessage,
+    updateToolCallStatus,
+    setAIThinking,
+    setCurrentPhase,
+    setCurrentPlan,
+    upsertPlanMessage,
+    upsertAgentTask,
+    setAgentSummary,
+    resetRuntimeState,
+  } = useChatStore();
   const suggestMode = useDocumentStore((s) => s.suggestMode);
   const requestEditorRefresh = useDocumentStore((s) => s.requestEditorRefresh);
+  const planModeEnabled = useChatStore((state) => state.planModeEnabled);
 
   useEffect(() => {
     if (!documentId) return;
@@ -23,6 +34,9 @@ export function useChatWebSocket(documentId: string | null) {
       switch (data.type) {
         case 'ai_message':
           setAIThinking(false);
+          if (useChatStore.getState().currentPlan?.status === 'executing') {
+            setCurrentPlan({ ...useChatStore.getState().currentPlan!, status: 'completed' });
+          }
           addMessage({ role: 'ai', content: data.content || '' });
           break;
         case 'tool_call':
@@ -32,6 +46,10 @@ export function useChatWebSocket(documentId: string | null) {
               tool: data.tool || '',
               status: 'executing',
               description: data.description,
+              taskId: data.task_id,
+              agentId: data.agent_id,
+              phase: data.phase,
+              summary: data.summary,
             },
           });
           break;
@@ -50,10 +68,49 @@ export function useChatWebSocket(documentId: string | null) {
             caption_added: data.caption_added,
             caption_text: data.caption_text,
             final_size: data.final_size,
+          }, {
+            taskId: data.task_id,
+            agentId: data.agent_id,
+            phase: data.phase,
+            summary: data.summary,
           });
           if (data.status === 'success' && data.reload_required) {
             requestEditorRefresh();
           }
+          break;
+        case 'agent_phase':
+          setCurrentPhase(data.phase || 'idle');
+          break;
+        case 'agent_plan':
+          upsertPlanMessage({
+            title: data.title || '执行计划',
+            summary: data.summary || '',
+            content: data.content || '',
+            status: data.status || 'awaiting_decision',
+          });
+          setAIThinking(data.status === 'executing');
+          break;
+        case 'agent_plan_decision_required':
+          upsertPlanMessage({
+            title: data.title || '执行计划',
+            summary: data.summary || '',
+            content: data.content || '',
+            status: 'awaiting_decision',
+          });
+          setAIThinking(false);
+          break;
+        case 'agent_task':
+          upsertAgentTask({
+            task_id: data.task_id || '',
+            title: data.title || '未命名任务',
+            status: data.status || 'pending',
+            summary: data.summary,
+            parent_task_id: data.parent_task_id,
+            agent_id: data.agent_id,
+          });
+          break;
+        case 'agent_summary':
+          setAgentSummary(data.summary || '');
           break;
         case 'error':
           setAIThinking(false);
@@ -76,7 +133,18 @@ export function useChatWebSocket(documentId: string | null) {
       socket.close();
       ws.current = null;
     };
-  }, [documentId, addMessage, updateToolCallStatus, setAIThinking, requestEditorRefresh]);
+  }, [
+    documentId,
+    addMessage,
+    updateToolCallStatus,
+    setAIThinking,
+    setCurrentPhase,
+    setCurrentPlan,
+    upsertPlanMessage,
+    upsertAgentTask,
+    setAgentSummary,
+    requestEditorRefresh,
+  ]);
 
   const sendMessage = useCallback(
     (content: string, attachments: ChatAttachment[] = []) => {
@@ -84,6 +152,7 @@ export function useChatWebSocket(documentId: string | null) {
         addMessage({ role: 'system', error: '对话通道尚未连接，请稍后重试。' });
         return;
       }
+      resetRuntimeState();
       addMessage({ role: 'user', content, attachments });
       setAIThinking(true);
       ws.current.send(
@@ -98,10 +167,11 @@ export function useChatWebSocket(documentId: string | null) {
             height,
           })),
           suggest: suggestMode,
+          plan_mode: planModeEnabled,
         })
       );
     },
-    [addMessage, setAIThinking, suggestMode]
+    [addMessage, planModeEnabled, resetRuntimeState, setAIThinking, suggestMode]
   );
 
   const switchMode = useCallback((suggest: boolean) => {
@@ -109,5 +179,24 @@ export function useChatWebSocket(documentId: string | null) {
     ws.current.send(JSON.stringify({ type: 'set_suggest_mode', suggest }));
   }, []);
 
-  return { sendMessage, switchMode };
+  const sendPlanDecision = useCallback((decision: 'yes' | 'no') => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    if (decision === 'yes') {
+      setAIThinking(true);
+      setCurrentPlan(
+        useChatStore.getState().currentPlan
+          ? { ...useChatStore.getState().currentPlan!, status: 'executing' }
+          : null,
+      );
+    }
+    ws.current.send(JSON.stringify({ type: 'agent_plan_decision', decision }));
+  }, [setAIThinking, setCurrentPlan]);
+
+  const sendPlanFeedback = useCallback((content: string) => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    setAIThinking(true);
+    ws.current.send(JSON.stringify({ type: 'agent_plan_feedback', content }));
+  }, [setAIThinking]);
+
+  return { sendMessage, switchMode, sendPlanDecision, sendPlanFeedback };
 }

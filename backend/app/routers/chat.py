@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.services import agent_service
+from app.services.agent_service import AgentRuntimeState
 from app.services.superdoc_service import superdoc_service
 from app.models.schemas import ChatAttachment
 
@@ -23,6 +24,7 @@ class PendingAnchorTask:
 class ChatSessionState:
     history: list[dict[str, Any]] = field(default_factory=list)
     pending_anchor_task: PendingAnchorTask | None = None
+    runtime: AgentRuntimeState = field(default_factory=AgentRuntimeState)
 
 
 _chat_sessions: dict[str, ChatSessionState] = {}
@@ -50,6 +52,7 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                 content = data.get("content", "").strip()
                 attachment_payloads = data.get("attachments") or []
                 attachments = [ChatAttachment.model_validate(item).model_dump() for item in attachment_payloads]
+                plan_mode = bool(data.get("plan_mode", False))
 
                 if not content and not attachments:
                     continue
@@ -68,6 +71,8 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                     attachments=effective_attachments,
                     ws=ws,
                     suggest=suggest,
+                    plan_mode=plan_mode,
+                    runtime=session.runtime,
                 )
 
                 session.history.append({
@@ -85,6 +90,68 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                     )
                 else:
                     session.pending_anchor_task = None
+
+            elif msg_type == "agent_plan_decision":
+                decision = str(data.get("decision") or "").strip().lower()
+                pending_plan = session.runtime.pending_plan
+                if pending_plan is None:
+                    await ws.send_json({"type": "error", "message": "当前没有等待确认的计划。"})
+                    continue
+
+                if decision == "yes":
+                    session.runtime.plan_mode_state = "executing"
+                    await ws.send_json({"type": "agent_plan", "title": pending_plan.title, "summary": pending_plan.summary, "content": pending_plan.content, "status": "executing"})
+                    execution_prompt = agent_service.build_execution_prompt_from_plan(pending_plan)
+                    result = await agent_service.run_agent_loop(
+                        document_id=document_id,
+                        user_message=execution_prompt,
+                        chat_history=list(session.history),
+                        attachments=list(pending_plan.attachments),
+                        ws=ws,
+                        suggest=pending_plan.suggest,
+                        plan_mode=False,
+                        approved_plan_execution=True,
+                        runtime=session.runtime,
+                    )
+                    session.history.append({"role": "user", "content": "用户已确认执行计划。"})
+                    if result.content:
+                        session.history.append({"role": "assistant", "content": result.content})
+                    session.runtime.pending_plan = None
+                    session.runtime.plan_mode_state = "idle"
+                    session.runtime.execution_strategy = "normal_execution"
+                elif decision == "no":
+                    pending_plan.waiting_for_feedback = True
+                    session.runtime.plan_mode_state = "collecting_feedback"
+                    await ws.send_json({"type": "agent_plan", "title": pending_plan.title, "summary": pending_plan.summary, "content": pending_plan.content, "status": "collecting_feedback"})
+                else:
+                    await ws.send_json({"type": "error", "message": "未知的计划决策。"})
+
+            elif msg_type == "agent_plan_feedback":
+                feedback = data.get("content", "").strip()
+                pending_plan = session.runtime.pending_plan
+                if pending_plan is None:
+                    await ws.send_json({"type": "error", "message": "当前没有可补充的计划。"})
+                    continue
+                if not feedback:
+                    await ws.send_json({"type": "error", "message": "请先输入要补充的内容。"})
+                    continue
+
+                pending_plan.waiting_for_feedback = False
+                session.runtime.plan_mode_state = "planning"
+                feedback_prompt = agent_service.build_feedback_prompt_from_plan(pending_plan, feedback)
+                result = await agent_service.run_agent_loop(
+                    document_id=document_id,
+                    user_message=feedback_prompt,
+                    chat_history=list(session.history),
+                    attachments=list(pending_plan.attachments),
+                    ws=ws,
+                    suggest=pending_plan.suggest,
+                    plan_mode=True,
+                    runtime=session.runtime,
+                )
+                session.history.append({"role": "user", "content": feedback})
+                if result.content:
+                    session.history.append({"role": "assistant", "content": result.content})
 
             elif msg_type == "set_suggest_mode":
                 suggest = data.get("suggest", True)

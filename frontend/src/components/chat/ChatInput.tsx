@@ -13,6 +13,8 @@ export function ChatInput({ documentId, onSend }: ChatInputProps) {
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const isAIThinking = useChatStore((state) => state.isAIThinking);
+  const planModeEnabled = useChatStore((state) => state.planModeEnabled);
+  const setPlanModeEnabled = useChatStore((state) => state.setPlanModeEnabled);
   const addMessage = useChatStore((state) => state.addMessage);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -169,6 +171,16 @@ export function ChatInput({ documentId, onSend }: ChatInputProps) {
             >
               {isUploading ? '上传中...' : '上传图片'}
             </button>
+            <label className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-zinc-600">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-zinc-950"
+                checked={planModeEnabled}
+                onChange={(event) => setPlanModeEnabled(event.target.checked)}
+                disabled={isAIThinking}
+              />
+              <span>Plan Mode</span>
+            </label>
             <span>支持粘贴截图或上传图片。</span>
           </div>
         </div>

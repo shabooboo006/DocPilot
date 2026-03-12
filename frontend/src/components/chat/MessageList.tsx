@@ -3,14 +3,19 @@ import { useChatStore } from '../../hooks/useChatStore';
 import { MessageBubble } from './MessageBubble';
 import { ToolCallIndicator } from './ToolCallIndicator';
 
-export function MessageList() {
+interface MessageListProps {
+  onPlanDecision: (decision: 'yes' | 'no') => void;
+  onPlanFeedback: (content: string) => void;
+}
+
+export function MessageList({ onPlanDecision, onPlanFeedback }: MessageListProps) {
   const messages = useChatStore((state) => state.messages);
   const isAIThinking = useChatStore((state) => state.isAIThinking);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isAIThinking]);
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-4">
@@ -25,7 +30,12 @@ export function MessageList() {
           message.toolCall ? (
             <ToolCallIndicator key={message.id} message={message} />
           ) : (
-            <MessageBubble key={message.id} message={message} />
+            <MessageBubble
+              key={message.id}
+              message={message}
+              onPlanDecision={onPlanDecision}
+              onPlanFeedback={onPlanFeedback}
+            />
           )
         )}
         {isAIThinking && (

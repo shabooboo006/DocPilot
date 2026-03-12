@@ -19,7 +19,12 @@ const STATUS_META = {
   },
 } as const;
 
-const RECOVERABLE_ERROR_CODES = new Set(['invalid_target_state']);
+const RECOVERABLE_ERROR_CODES = new Set([
+  'invalid_target_state',
+  'missing_target_text_for_inline_formatting',
+  'segment_has_single_text_candidate',
+  'single_candidate_context_mismatch',
+]);
 
 function isRecoverableError(errorCode?: string): boolean {
   return Boolean(errorCode && RECOVERABLE_ERROR_CODES.has(errorCode));
@@ -133,6 +138,19 @@ function buildToolSummary(
       const markdown = typeof result.markdown === 'string' ? result.markdown : '';
       return `已读取 Markdown 视图，约 ${markdown.length} 个字符。`;
     }
+    case 'get_document_outline': {
+      const total = Number(result.total ?? 0);
+      return total > 0 ? `已提取文档大纲，共 ${total} 个标题节点。` : '当前文档没有识别到标题大纲。';
+    }
+    case 'list_style_inventory': {
+      const styles = Array.isArray(result.styles) ? result.styles.length : 0;
+      const headings = Array.isArray(result.heading_levels) ? result.heading_levels.length : 0;
+      return `已读取样式分布，共 ${styles} 类段落样式，${headings} 层标题级别。`;
+    }
+    case 'inspect_segment_formatting': {
+      const paragraphs = Array.isArray(result.paragraphs) ? result.paragraphs.length : 0;
+      return `已检查目标片段格式，共 ${paragraphs} 个段落节点。`;
+    }
     case 'get_formatting_capabilities': {
       const operationGroups = (result.operation_groups ?? {}) as {
         paragraph?: unknown[];
@@ -199,10 +217,19 @@ function buildToolSummary(
       }
       return typeof result.message === 'string' ? result.message : '未发生替换。';
     }
+    case 'replace_section_content': {
+      const location = typeof result.location_label === 'string' ? result.location_label : '目标片段';
+      return `已整体替换 ${location} 的内容。`;
+    }
     case 'insert_paragraph_relative': {
       const location = typeof result.location_label === 'string' ? result.location_label : '目标片段';
       const placement = result.placement === 'before' ? '前' : '后';
       return `已在 ${location}${placement}插入新段落。`;
+    }
+    case 'insert_section_relative': {
+      const location = typeof result.location_label === 'string' ? result.location_label : '目标片段';
+      const paragraphs = Number(result.body_paragraph_count ?? 0);
+      return `已在 ${location} 附近插入新章节${paragraphs > 0 ? `，并附带 ${paragraphs} 段正文` : ''}。`;
     }
     case 'insert_heading_relative': {
       const location = typeof result.location_label === 'string' ? result.location_label : '目标片段';
@@ -220,6 +247,12 @@ function buildToolSummary(
       const columns = Number(result.columns ?? 0);
       return `已在 ${location} 附近创建 ${rows}x${columns} 表格。`;
     }
+    case 'create_table_at_anchor': {
+      const location = typeof result.location_label === 'string' ? result.location_label : '目标片段';
+      const rows = Number(result.rows ?? 0);
+      const columns = Number(result.columns ?? 0);
+      return `已在 ${location} 锚点创建 ${rows}x${columns} 表格。`;
+    }
     case 'get_table_details': {
       const structure = result.structure as { rows?: number; columns?: number } | undefined;
       const rows = Number(structure?.rows ?? 0);
@@ -231,6 +264,10 @@ function buildToolSummary(
     case 'set_table_cell_text': {
       const location = typeof result.location_label === 'string' ? result.location_label : '目标单元格';
       return `已更新 ${location}。`;
+    }
+    case 'update_table_cells': {
+      const updatedCount = Number(result.updated_count ?? 0);
+      return `已批量更新 ${updatedCount} 个表格单元格。`;
     }
     case 'list_comments': {
       const total = Number(result.total ?? 0);
@@ -273,6 +310,10 @@ function buildToolSummary(
         ? `已在 ${location} 执行 ${operation}，共处理 ${applied} 处目标。`
         : `已尝试在 ${location} 执行 ${operation}。`;
     }
+    case 'normalize_heading_hierarchy': {
+      const changedCount = Number(result.changed_count ?? 0);
+      return changedCount > 0 ? `已规范 ${changedCount} 个标题层级。` : '当前没有需要规范的标题层级。';
+    }
     default:
       return null;
   }
@@ -283,6 +324,13 @@ function buildRecoveryHint(
   errorDetails?: Record<string, unknown>
 ): string | null {
   if (errorCode !== 'invalid_target_state') {
+    if (
+      errorCode === 'missing_target_text_for_inline_formatting'
+      || errorCode === 'segment_has_single_text_candidate'
+      || errorCode === 'single_candidate_context_mismatch'
+    ) {
+      return '这是可自动恢复的工具调用问题，Agent 会优先补参数或改用更合适的执行方式。';
+    }
     return null;
   }
 

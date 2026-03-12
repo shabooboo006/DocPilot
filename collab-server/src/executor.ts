@@ -37,7 +37,15 @@ type TrackChangesSummary = {
 };
 
 type SegmentKind = 'title' | 'paragraph' | 'table_cell';
-type ToolErrorCode = 'ambiguous_match' | 'insufficient_context' | 'title_not_unique' | 'invalid_target_state';
+type ToolErrorCode =
+  | 'ambiguous_match'
+  | 'insufficient_context'
+  | 'title_not_unique'
+  | 'invalid_target_state'
+  | 'missing_target_text_for_inline_formatting'
+  | 'segment_has_single_text_candidate'
+  | 'single_candidate_context_mismatch'
+  | 'target_not_found';
 type ParagraphNodeType = 'paragraph' | 'heading' | 'listItem';
 
 type ParagraphInfo = {
@@ -283,6 +291,45 @@ const BASE_TOOLS: ToolDefinition[] = [
       parameters: {
         type: 'object',
         properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_document_outline',
+      description: 'Read the document outline derived from title and heading-like segments.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_style_inventory',
+      description: 'Inspect paragraph style usage, heading levels, and list distribution in the current document.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'inspect_segment_formatting',
+      description: 'Inspect formatting-related metadata for one confirmed segment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_id: {
+            type: 'string',
+            description: 'Confirmed segment id from get_document_text or find_text_context.',
+          },
+        },
+        required: ['segment_id'],
       },
     },
   },
@@ -554,6 +601,27 @@ const BASE_TOOLS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'replace_section_content',
+      description: 'Replace the full content of one confirmed segment or section anchor.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_id: {
+            type: 'string',
+            description: 'Confirmed segment id.',
+          },
+          content: {
+            type: 'string',
+            description: 'New section content.',
+          },
+        },
+        required: ['segment_id', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'insert_paragraph_relative',
       description: 'Insert a new paragraph before or after one confirmed Word segment.',
       parameters: {
@@ -574,6 +642,40 @@ const BASE_TOOLS: ToolDefinition[] = [
           },
         },
         required: ['segment_id', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'insert_section_relative',
+      description: 'Insert a heading plus optional body paragraphs before or after one confirmed segment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_id: {
+            type: 'string',
+            description: 'Confirmed segment id.',
+          },
+          placement: {
+            type: 'string',
+            enum: ['before', 'after'],
+          },
+          heading: {
+            type: 'string',
+            description: 'Section heading text.',
+          },
+          level: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 6,
+          },
+          body: {
+            type: 'string',
+            description: 'Optional section body. Blank lines will be treated as paragraph separators.',
+          },
+        },
+        required: ['segment_id', 'heading'],
       },
     },
   },
@@ -661,6 +763,35 @@ const BASE_TOOLS: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'create_table_at_anchor',
+      description: 'Alias of create_table_relative for one confirmed segment anchor.',
+      parameters: {
+        type: 'object',
+        properties: {
+          segment_id: {
+            type: 'string',
+            description: 'Confirmed segment id used as the table anchor.',
+          },
+          placement: {
+            type: 'string',
+            enum: ['before', 'after'],
+          },
+          rows: {
+            type: 'integer',
+            minimum: 1,
+          },
+          columns: {
+            type: 'integer',
+            minimum: 1,
+          },
+        },
+        required: ['segment_id', 'rows', 'columns'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_table_details',
       description: 'Read structure, cells, and properties of one table by table_index.',
       parameters: {
@@ -705,6 +836,35 @@ const BASE_TOOLS: ToolDefinition[] = [
           },
         },
         required: ['table_index', 'row', 'column', 'text'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_table_cells',
+      description: 'Batch update multiple table cells in one table.',
+      parameters: {
+        type: 'object',
+        properties: {
+          table_index: {
+            type: 'integer',
+            minimum: 1,
+          },
+          cells: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                'row': { type: 'integer', minimum: 1 },
+                'column': { type: 'integer', minimum: 1 },
+                'text': { type: 'string' },
+              },
+              required: ['row', 'column', 'text'],
+            },
+          },
+        },
+        required: ['table_index', 'cells'],
       },
     },
   },
@@ -966,6 +1126,17 @@ const BASE_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'normalize_heading_hierarchy',
+      description: 'Normalize heading styles or outline levels across the document using heading-like paragraphs.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
 ];
 
 export async function getAgentTools(): Promise<ToolDefinition[]> {
@@ -992,6 +1163,9 @@ export async function dispatchAgentTool({
   if (
     name === 'get_document_text'
     || name === 'get_document_markdown'
+    || name === 'get_document_outline'
+    || name === 'list_style_inventory'
+    || name === 'inspect_segment_formatting'
     || name === 'get_formatting_capabilities'
     || name === 'find_text_context'
     || name === 'query_match'
@@ -1011,6 +1185,17 @@ export async function dispatchAgentTool({
           ? getDocumentText(snapshot)
           : name === 'get_document_markdown'
             ? getDocumentMarkdown(readEditor, documentId)
+          : name === 'get_document_outline'
+            ? getDocumentOutline(readEditor, snapshot, documentId)
+          : name === 'list_style_inventory'
+            ? listStyleInventory(readEditor, snapshot, documentId)
+          : name === 'inspect_segment_formatting'
+            ? inspectSegmentFormatting(
+              readEditor,
+              snapshot,
+              documentId,
+              String(args.segment_id ?? ''),
+            )
           : name === 'get_formatting_capabilities'
             ? getFormattingCapabilities(readEditor)
           : name === 'find_text_context'
@@ -1138,6 +1323,17 @@ export async function dispatchAgentTool({
           );
           documentMutated = (result.replacements as number) > 0;
           break;
+        case 'replace_section_content':
+          result = replaceSectionContent(
+            mutationEditor,
+            snapshot,
+            documentId,
+            String(args.segment_id ?? ''),
+            String(args.content ?? ''),
+            mode,
+          );
+          documentMutated = Boolean(result.updated);
+          break;
         case 'insert_paragraph_relative':
           result = insertParagraphRelative(
             mutationEditor,
@@ -1149,6 +1345,20 @@ export async function dispatchAgentTool({
             mode,
           );
           documentMutated = true;
+          break;
+        case 'insert_section_relative':
+          result = insertSectionRelative(
+            mutationEditor,
+            snapshot,
+            documentId,
+            String(args.segment_id ?? ''),
+            normalizeBeforeAfterPlacement(args.placement),
+            String(args.heading ?? ''),
+            Number(args.level ?? 0),
+            String(args.body ?? ''),
+            mode,
+          );
+          documentMutated = Boolean(result.inserted);
           break;
         case 'insert_heading_relative':
           result = insertHeadingRelative(
@@ -1180,6 +1390,19 @@ export async function dispatchAgentTool({
           );
           documentMutated = true;
           break;
+        case 'create_table_at_anchor':
+          result = createTableRelative(
+            mutationEditor,
+            snapshot,
+            documentId,
+            String(args.segment_id ?? ''),
+            normalizeBeforeAfterPlacement(args.placement),
+            Number(args.rows ?? 0),
+            Number(args.columns ?? 0),
+            mode,
+          );
+          documentMutated = true;
+          break;
         case 'set_table_cell_text':
           result = setTableCellText(
             mutationEditor,
@@ -1191,6 +1414,16 @@ export async function dispatchAgentTool({
             mode,
           );
           documentMutated = true;
+          break;
+        case 'update_table_cells':
+          result = updateTableCells(
+            mutationEditor,
+            documentId,
+            Number(args.table_index ?? 0),
+            Array.isArray(args.cells) ? args.cells : [],
+            mode,
+          );
+          documentMutated = Number(result.updated_count ?? 0) > 0;
           break;
         case 'apply_mutations':
           result = applyMutations(
@@ -1273,6 +1506,15 @@ export async function dispatchAgentTool({
             mode,
           );
           documentMutated = (result.mutations_applied as number) > 0;
+          break;
+        case 'normalize_heading_hierarchy':
+          result = normalizeHeadingHierarchy(
+            mutationEditor,
+            snapshot,
+            documentId,
+            mode,
+          );
+          documentMutated = Number(result.changed_count ?? 0) > 0;
           break;
         default:
           throw new Error(`Unknown tool: ${name}`);
@@ -1387,6 +1629,123 @@ function getDocumentMarkdown(editor: HeadlessEditor, documentId: string): Record
   return {
     document_id: documentId,
     markdown: editor.doc.getMarkdown({}),
+  };
+}
+
+function getDocumentOutline(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+): Record<string, unknown> {
+  const items = snapshot.internalSegments
+    .map((segment) => {
+      const paragraph = getSegmentParagraphInfos(segment)[0];
+      const paragraphNode = paragraph ? findParagraphNodeById(editor, paragraph.nodeId) : null;
+      const styleId = paragraphNode ? getParagraphStyleId(paragraphNode) : '';
+      const inferredLevel = paragraphNode ? getParagraphHeadingLevel(paragraphNode) : null;
+      const isHeading = segment.kind === 'title' || inferredLevel != null;
+
+      if (!isHeading) {
+        return null;
+      }
+
+      return {
+        segment_id: segment.segment_id,
+        text: segment.text,
+        level: segment.kind === 'title' ? 0 : inferredLevel ?? 1,
+        kind: segment.kind === 'title' ? 'title' : 'heading',
+        location_label: segment.location_label,
+        section_path: segment.section_path,
+        style_id: styleId || undefined,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => item != null);
+
+  return {
+    document_id: documentId,
+    total: items.length,
+    items,
+  };
+}
+
+function listStyleInventory(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+): Record<string, unknown> {
+  const styleCounts = new Map<string, number>();
+  const headingCounts = new Map<number, number>();
+  let paragraphTotal = 0;
+  let listParagraphs = 0;
+
+  editor.state.doc.forEach((node: any) => {
+    if (node.type?.name !== 'paragraph') {
+      return;
+    }
+
+    paragraphTotal += 1;
+    const styleId = getParagraphStyleId(node) || '(unstyled)';
+    styleCounts.set(styleId, (styleCounts.get(styleId) ?? 0) + 1);
+
+    const level = getParagraphHeadingLevel(node);
+    if (level != null) {
+      headingCounts.set(level, (headingCounts.get(level) ?? 0) + 1);
+    }
+
+    if (isListParagraph(node.attrs)) {
+      listParagraphs += 1;
+    }
+  });
+
+  return {
+    document_id: documentId,
+    paragraph_total: paragraphTotal,
+    segment_total: snapshot.segment_count,
+    list_paragraph_total: listParagraphs,
+    styles: Array.from(styleCounts.entries())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([style_id, count]) => ({ style_id, count })),
+    heading_levels: Array.from(headingCounts.entries())
+      .sort(([left], [right]) => left - right)
+      .map(([level, count]) => ({ level, count })),
+  };
+}
+
+function inspectSegmentFormatting(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  segmentId: string,
+): Record<string, unknown> {
+  const segment = resolveSegment(snapshot, segmentId);
+  const paragraphs = getSegmentParagraphInfos(segment).map((paragraph) => {
+    const node = findParagraphNodeById(editor, paragraph.nodeId);
+    const styleId = node ? getParagraphStyleId(node) : '';
+    const runProperties = node?.attrs?.paragraphProperties?.runProperties ?? {};
+    const paragraphProperties = node?.attrs?.paragraphProperties ?? {};
+    const numbering = paragraphProperties.numberingProperties ?? {};
+
+    return {
+      paragraph_index_in_segment: paragraph.paragraphIndexInSegment,
+      node_id: paragraph.nodeId,
+      node_type: paragraph.nodeType,
+      text: paragraph.text,
+      style_id: styleId || undefined,
+      heading_level: node ? getParagraphHeadingLevel(node) ?? undefined : undefined,
+      alignment: paragraphProperties.justification ?? undefined,
+      font_size: runProperties.fontSize ?? runProperties.fontSizeCs ?? undefined,
+      is_list: isListParagraph(node?.attrs),
+      list_level: numbering.ilvl ?? undefined,
+    };
+  });
+
+  return {
+    document_id: documentId,
+    segment_id: segment.segment_id,
+    kind: segment.kind,
+    location_label: segment.location_label,
+    section_path: segment.section_path,
+    paragraphs,
   };
 }
 
@@ -1713,25 +2072,46 @@ function replaceText(
   const occurrences = findOccurrencesWithinSegment(segment, trimmedTarget);
   if (occurrences.length === 0) {
     throw new StructuredToolError(
-      'insufficient_context',
+      'target_not_found',
       `目标文本在指定片段中不存在：${trimmedTarget}`,
       findMatches(snapshot.internalSegments, trimmedTarget, 5),
+      {
+        can_retry_without_user: false,
+        next_best_action: 'read_document_and_retry',
+        segment_id: segment.segment_id,
+        location_label: segment.location_label,
+      },
     );
   }
 
   const hasContextConstraint = contextBefore.trim() !== '' || contextAfter.trim() !== '';
-  const filteredOccurrences = hasContextConstraint
+  let filteredOccurrences = hasContextConstraint
     ? occurrences.filter((occurrence) =>
         matchOccurrenceContext(occurrence, contextBefore, contextAfter),
       )
     : occurrences;
 
   if (hasContextConstraint && filteredOccurrences.length === 0) {
-    throw new StructuredToolError(
-      'insufficient_context',
-      '指定的上下文与片段中的目标文本不匹配，请重新确认要修改的那一处。',
-      occurrences,
-    );
+    if (occurrences.length === 1) {
+      throw new StructuredToolError(
+        'single_candidate_context_mismatch',
+        '指定的上下文与片段中的目标文本不匹配，但当前片段里只有一个候选命中。',
+        [toPublicMatch(occurrences[0])],
+        {
+          can_retry_without_user: true,
+          next_best_action: 'retry_same_tool_with_target_text',
+          inferred_target_text: occurrences[0].matched_text,
+          segment_id: segment.segment_id,
+          location_label: segment.location_label,
+        },
+      );
+    } else {
+      throw new StructuredToolError(
+        'insufficient_context',
+        '指定的上下文与片段中的目标文本不匹配，请重新确认要修改的那一处。',
+        occurrences,
+      );
+    }
   }
 
   if (!replaceAll && filteredOccurrences.length !== 1) {
@@ -1777,6 +2157,55 @@ function replaceText(
   };
 }
 
+function replaceSectionContent(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  segmentId: string,
+  content: string,
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const segment = resolveSegment(snapshot, segmentId);
+  const paragraphs = getSegmentParagraphInfos(segment);
+  if (paragraphs.length === 0) {
+    throw new StructuredToolError(
+      'insufficient_context',
+      '未找到可编辑的目标段落，请重新定位后再试。',
+      [toSegmentMatchCandidate(segment)],
+    );
+  }
+
+  const firstRange = findParagraphRangeForSegment(
+    editor,
+    segment.segment_id,
+    paragraphs[0].paragraphIndexInSegment,
+  );
+  const lastRange = findParagraphRangeForSegment(
+    editor,
+    segment.segment_id,
+    paragraphs[paragraphs.length - 1].paragraphIndexInSegment,
+  );
+
+  if (!firstRange || !lastRange) {
+    throw new StructuredToolError(
+      'insufficient_context',
+      '当前无法重新定位要整体替换的文档片段，请先重新读取文档结构后再试。',
+      [toSegmentMatchCandidate(segment)],
+    );
+  }
+
+  replaceRange(editor, firstRange.from, lastRange.to, content.trim());
+
+  return {
+    document_id: documentId,
+    updated: true,
+    segment_id: segment.segment_id,
+    location_label: segment.location_label,
+    content_length: content.trim().length,
+    mode,
+  };
+}
+
 function insertParagraphRelative(
   editor: HeadlessEditor,
   snapshot: DocumentSnapshot,
@@ -1814,6 +2243,62 @@ function insertParagraphRelative(
     mode,
     paragraph: created.paragraph ?? null,
     insertion_point: created.insertionPoint ?? null,
+  };
+}
+
+function insertSectionRelative(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  segmentId: string,
+  placement: 'before' | 'after',
+  heading: string,
+  level: number,
+  body: string,
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const headingResult = insertHeadingRelative(
+    editor,
+    snapshot,
+    documentId,
+    segmentId,
+    placement,
+    level,
+    heading,
+    mode,
+  );
+
+  const refreshedSnapshot = buildDocumentSnapshot(editor, documentId, mode);
+  const headingSegmentId = refreshedSnapshot.internalSegments.find((segment) =>
+    segment.text.trim() === heading.trim() && getSegmentParagraphInfos(segment)[0]?.nodeType === 'heading',
+  )?.segment_id ?? segmentId;
+  const bodyParagraphs = body
+    .split(/\n\s*\n/g)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  for (const paragraph of bodyParagraphs) {
+    insertParagraphRelative(
+      editor,
+      buildDocumentSnapshot(editor, documentId, mode),
+      documentId,
+      headingSegmentId,
+      'after',
+      paragraph,
+      mode,
+    );
+  }
+
+  return {
+    document_id: documentId,
+    inserted: true,
+    segment_id: segmentId,
+    location_label: headingResult.location_label,
+    placement,
+    heading,
+    level: headingResult.level,
+    body_paragraph_count: bodyParagraphs.length,
+    mode,
   };
 }
 
@@ -2066,6 +2551,46 @@ function createTableRelative(
   };
 }
 
+function updateTableCells(
+  editor: HeadlessEditor,
+  documentId: string,
+  tableIndex: number,
+  cells: unknown[],
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const updates = cells
+    .map((cell) => (isRecord(cell) ? cell : null))
+    .filter((cell): cell is Record<string, unknown> => cell != null);
+
+  if (updates.length === 0) {
+    throw new Error('cells must contain at least one row/column/text update');
+  }
+
+  const results = updates.map((cell) =>
+    setTableCellText(
+      editor,
+      documentId,
+      tableIndex,
+      Number(cell.row ?? 0),
+      Number(cell.column ?? 0),
+      String(cell.text ?? ''),
+      mode,
+    ),
+  );
+
+  return {
+    document_id: documentId,
+    table_index: Math.trunc(tableIndex),
+    updated_count: results.length,
+    cells: results.map((result) => ({
+      row: result.row,
+      column: result.column,
+      location_label: result.location_label,
+    })),
+    mode,
+  };
+}
+
 function setTableCellText(
   editor: HeadlessEditor,
   documentId: string,
@@ -2102,6 +2627,67 @@ function setTableCellText(
     column: normalizedColumn,
     text: trimmedText,
     location_label: `表格${normalizedTableIndex} 第${normalizedRow}行 第${normalizedColumn}列`,
+    mode,
+  };
+}
+
+function normalizeHeadingHierarchy(
+  editor: HeadlessEditor,
+  snapshot: DocumentSnapshot,
+  documentId: string,
+  mode: DocumentMode,
+): Record<string, unknown> {
+  const docApi = editor.doc as any;
+  const changes: Array<Record<string, unknown>> = [];
+
+  for (const segment of snapshot.internalSegments) {
+    if (segment.kind === 'title') {
+      continue;
+    }
+
+    const paragraph = getSegmentParagraphInfos(segment)[0];
+    if (!paragraph) {
+      continue;
+    }
+
+    const node = findParagraphNodeById(editor, paragraph.nodeId);
+    if (!node) {
+      continue;
+    }
+
+    const inferredLevel = inferHeadingLevelFromText(segment.text);
+    if (inferredLevel == null) {
+      continue;
+    }
+
+    const currentLevel = getParagraphHeadingLevel(node);
+    if (currentLevel === inferredLevel && getParagraphStyleId(node) === `Heading${inferredLevel}`) {
+      continue;
+    }
+
+    const target = toParagraphTarget(paragraph);
+    invokeFormattingOperation(docApi, 'styles.paragraph.setStyle', {
+      target,
+      styleId: `Heading${inferredLevel}`,
+    });
+    invokeFormattingOperation(docApi, 'format.paragraph.setOutlineLevel', {
+      target,
+      outlineLevel: inferredLevel,
+    });
+
+    changes.push({
+      segment_id: segment.segment_id,
+      location_label: segment.location_label,
+      text: segment.text,
+      level: inferredLevel,
+    });
+  }
+
+  return {
+    document_id: documentId,
+    normalized: changes.length > 0,
+    changed_count: changes.length,
+    items: changes.slice(0, 20),
     mode,
   };
 }
@@ -2694,15 +3280,39 @@ function matchOccurrenceContext(
   const before = normalizeContextForMatch(contextBefore);
   const after = normalizeContextForMatch(contextAfter);
 
-  if (before && !normalizeContextForMatch(occurrence.context_before).includes(before)) {
+  if (before && !matchesContextWindow(before, normalizeContextForMatch(occurrence.context_before), 'before')) {
     return false;
   }
 
-  if (after && !normalizeContextForMatch(occurrence.context_after).includes(after)) {
+  if (after && !matchesContextWindow(after, normalizeContextForMatch(occurrence.context_after), 'after')) {
     return false;
   }
 
   return true;
+}
+
+function matchesContextWindow(
+  requested: string,
+  actual: string,
+  side: 'before' | 'after',
+): boolean {
+  if (!requested || !actual) {
+    return !requested;
+  }
+
+  if (actual.includes(requested) || requested.includes(actual)) {
+    return true;
+  }
+
+  const shorterLength = Math.min(requested.length, actual.length);
+  const overlapLength = Math.min(shorterLength, 16);
+  if (overlapLength <= 0) {
+    return false;
+  }
+
+  return side === 'before'
+    ? requested.slice(-overlapLength) === actual.slice(-overlapLength)
+    : requested.slice(0, overlapLength) === actual.slice(0, overlapLength);
 }
 
 function inferPlacement(intent: string): 'before' | 'after' | 'replace_placeholder' {
@@ -2793,6 +3403,22 @@ function normalizeFormattingArgs(
   return normalized;
 }
 
+function getSingleTextCandidate(segment: InternalSegment): string {
+  const nonEmptyParagraphs = segment.paragraphs
+    .map((paragraph) => paragraph.text.trim())
+    .filter(Boolean);
+
+  if (nonEmptyParagraphs.length === 1) {
+    return nonEmptyParagraphs[0];
+  }
+
+  if (nonEmptyParagraphs.length > 1 && nonEmptyParagraphs.join('').length <= 120) {
+    return nonEmptyParagraphs.join(' ');
+  }
+
+  return '';
+}
+
 function buildQueryMatchInput(
   snapshot: DocumentSnapshot,
   rawArgs: Record<string, unknown>,
@@ -2881,6 +3507,8 @@ function resolveInlineFormattingTargets(
   applyToAllMatches: boolean,
   applyToEntireSegment: boolean,
 ): Array<Record<string, unknown>> {
+  const singleTextCandidate = getSingleTextCandidate(segment);
+
   if (applyToEntireSegment) {
     const targets = getSegmentParagraphInfos(segment)
       .filter((paragraph) => paragraph.text.length > 0)
@@ -2906,31 +3534,60 @@ function resolveInlineFormattingTargets(
   const trimmedTarget = targetText.trim();
   if (!trimmedTarget) {
     throw new StructuredToolError(
-      'insufficient_context',
+      'missing_target_text_for_inline_formatting',
       '字符格式调整必须提供 target_text，或设置 apply_to_entire_segment=true。',
+      singleTextCandidate ? [toSegmentMatchCandidate(segment)] : [],
+      {
+        can_retry_without_user: true,
+        next_best_action: 'retry_same_tool_with_apply_to_entire_segment',
+        single_text_candidate: singleTextCandidate || undefined,
+        segment_id: segment.segment_id,
+        location_label: segment.location_label,
+      },
     );
   }
 
   const occurrences = findOccurrencesWithinSegment(segment, trimmedTarget);
   if (occurrences.length === 0) {
     throw new StructuredToolError(
-      'insufficient_context',
+      'target_not_found',
       `目标文本在指定片段中不存在：${trimmedTarget}`,
       findMatches([segment], trimmedTarget, 5),
+      {
+        can_retry_without_user: false,
+        next_best_action: 'read_document_and_retry',
+        segment_id: segment.segment_id,
+        location_label: segment.location_label,
+      },
     );
   }
 
   const hasContextConstraint = contextBefore.trim() !== '' || contextAfter.trim() !== '';
-  const filteredOccurrences = hasContextConstraint
+  let filteredOccurrences = hasContextConstraint
     ? occurrences.filter((occurrence) => matchOccurrenceContext(occurrence, contextBefore, contextAfter))
     : occurrences;
 
   if (hasContextConstraint && filteredOccurrences.length === 0) {
-    throw new StructuredToolError(
-      'insufficient_context',
-      '指定的上下文与片段中的目标文本不匹配，请重新确认要调整格式的那一处。',
-      occurrences,
-    );
+    if (occurrences.length === 1) {
+      throw new StructuredToolError(
+        'single_candidate_context_mismatch',
+        '指定的上下文与片段中的目标文本不匹配，但当前片段里只有一个候选命中。',
+        [toPublicMatch(occurrences[0])],
+        {
+          can_retry_without_user: true,
+          next_best_action: 'retry_same_tool_with_target_text',
+          inferred_target_text: occurrences[0].matched_text,
+          segment_id: segment.segment_id,
+          location_label: segment.location_label,
+        },
+      );
+    } else {
+      throw new StructuredToolError(
+        'insufficient_context',
+        '指定的上下文与片段中的目标文本不匹配，请重新确认要调整格式的那一处。',
+        occurrences,
+      );
+    }
   }
 
   if (!applyToAllMatches && filteredOccurrences.length !== 1) {
@@ -2971,18 +3628,89 @@ function resolveSingleTextTarget(
   contextAfter: string,
 ): { segment: InternalSegment; target: Record<string, unknown> } {
   const segment = resolveSegment(snapshot, segmentId);
-  const targets = resolveInlineFormattingTargets(
-    segment,
-    targetText,
-    contextBefore,
-    contextAfter,
-    false,
-    false,
-  );
+  const trimmedTarget = targetText.trim();
+  if (!trimmedTarget) {
+    throw new StructuredToolError(
+      'insufficient_context',
+      '缺少 target_text。请先明确要操作的具体文字。',
+      [toSegmentMatchCandidate(segment)],
+      {
+        can_retry_without_user: false,
+        next_best_action: 'retry_same_tool_with_target_text',
+        single_text_candidate: getSingleTextCandidate(segment) || undefined,
+      },
+    );
+  }
+
+  const occurrences = findOccurrencesWithinSegment(segment, trimmedTarget);
+  if (occurrences.length === 0) {
+    throw new StructuredToolError(
+      'target_not_found',
+      `目标文本在指定片段中不存在：${trimmedTarget}`,
+      findMatches([segment], trimmedTarget, 5),
+      {
+        can_retry_without_user: false,
+        next_best_action: 'read_document_and_retry',
+      },
+    );
+  }
+
+  const hasContextConstraint = contextBefore.trim() !== '' || contextAfter.trim() !== '';
+  let filteredOccurrences = hasContextConstraint
+    ? occurrences.filter((occurrence) => matchOccurrenceContext(occurrence, contextBefore, contextAfter))
+    : occurrences;
+
+  if (hasContextConstraint && filteredOccurrences.length === 0) {
+    if (occurrences.length === 1) {
+      throw new StructuredToolError(
+        'single_candidate_context_mismatch',
+        '指定的上下文与片段中的目标文本不匹配，但当前片段里只有一个候选命中。',
+        [toPublicMatch(occurrences[0])],
+        {
+          can_retry_without_user: true,
+          next_best_action: 'retry_same_tool_with_target_text',
+          inferred_target_text: occurrences[0].matched_text,
+          segment_id: segment.segment_id,
+          location_label: segment.location_label,
+        },
+      );
+    }
+
+    throw new StructuredToolError(
+      'insufficient_context',
+      '指定的上下文与片段中的目标文本不匹配，请重新确认要操作的那一处。',
+      occurrences,
+    );
+  }
+
+  if (filteredOccurrences.length !== 1) {
+    throw new StructuredToolError(
+      'ambiguous_match',
+      '目标文本在该 Word 片段中命中多处，请根据上下文明确指定要操作的那一处。',
+      filteredOccurrences,
+    );
+  }
+
+  const occurrence = filteredOccurrences[0];
+  const paragraph = segment.paragraphs.find((item) => item.paragraphIndexInSegment === occurrence.paragraphIndexInSegment);
+  if (!paragraph?.nodeId) {
+    throw new StructuredToolError(
+      'insufficient_context',
+      '未找到可编辑的目标段落，请重新定位后重试。',
+      [toPublicMatch(occurrence)],
+    );
+  }
 
   return {
     segment,
-    target: targets[0],
+    target: {
+      kind: 'text',
+      blockId: paragraph.nodeId,
+      range: {
+        start: occurrence.localIndex,
+        end: occurrence.localIndex + occurrence.matched_text.length,
+      },
+    },
   };
 }
 
@@ -3690,6 +4418,60 @@ function resolveParagraphTarget(node: any): { nodeId: string; nodeType: Paragrap
     nodeId,
     nodeType: resolveParagraphNodeType(node),
   };
+}
+
+function findParagraphNodeById(editor: HeadlessEditor, nodeId: string): any | null {
+  if (!nodeId.trim()) {
+    return null;
+  }
+
+  let matched: any | null = null;
+  editor.state.doc.forEach((node: any) => {
+    if (matched || node.type?.name !== 'paragraph') {
+      return;
+    }
+    if (resolveParagraphNodeId(node) === nodeId) {
+      matched = node;
+    }
+  });
+
+  return matched;
+}
+
+function getParagraphStyleId(node: any): string {
+  return String(node?.attrs?.paragraphProperties?.styleId ?? '').trim();
+}
+
+function getParagraphHeadingLevel(node: any): number | null {
+  return getHeadingLevel(getParagraphStyleId(node));
+}
+
+function inferHeadingLevelFromText(text: string): number | null {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > 120) {
+    return null;
+  }
+
+  if (/^\d+\.\d+\.\d+/.test(trimmed)) {
+    return 3;
+  }
+  if (/^\d+\.\d+/.test(trimmed)) {
+    return 2;
+  }
+  if (/^\d+[.)、]/.test(trimmed)) {
+    return 1;
+  }
+  if (/^[一二三四五六七八九十]+、/.test(trimmed)) {
+    return 1;
+  }
+  if (/^[（(][一二三四五六七八九十\d]+[)）]/.test(trimmed)) {
+    return 2;
+  }
+  if (/^[①②③④⑤⑥⑦⑧⑨⑩]/.test(trimmed)) {
+    return 3;
+  }
+
+  return null;
 }
 
 function resolveParagraphNodeId(node: any): string {

@@ -10,7 +10,7 @@ const STARTER_PROMPTS = [
 
 export function ChatPanel() {
   const { documentId, documentName } = useDocumentStore();
-  const { sendMessage } = useChatWebSocket(documentId);
+  const { sendMessage, sendPlanDecision, sendPlanFeedback } = useChatWebSocket(documentId);
 
   return (
     <aside className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-black/10 bg-white/82 shadow-[0_20px_50px_rgba(15,23,42,0.08)] backdrop-blur-xl">
@@ -47,7 +47,7 @@ export function ChatPanel() {
         </div>
       </div>
 
-      <MessageList />
+      <MessageList onPlanDecision={sendPlanDecision} onPlanFeedback={sendPlanFeedback} />
 
       {documentId ? (
         <ChatInput documentId={documentId} onSend={sendMessage} />

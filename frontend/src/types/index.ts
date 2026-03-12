@@ -40,12 +40,38 @@ export interface InsertedImageResult {
   selected_anchor?: AnchorCandidate;
 }
 
+export type AgentPhase = 'idle' | 'inspect' | 'plan' | 'execute' | 'verify' | 'respond' | string;
+
+export type AgentPlanStatus =
+  | 'awaiting_decision'
+  | 'collecting_feedback'
+  | 'executing'
+  | 'completed'
+  | string;
+
+export interface AgentTask {
+  task_id: string;
+  title: string;
+  status: string;
+  summary?: string;
+  parent_task_id?: string;
+  agent_id?: string;
+}
+
+export interface AgentPlan {
+  title: string;
+  summary: string;
+  content: string;
+  status: AgentPlanStatus;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'ai' | 'system';
   content?: string;
   attachments?: ChatAttachment[];
   toolCall?: ToolCallInfo;
+  agentPlan?: AgentPlan;
   error?: string;
   timestamp: number;
 }
@@ -55,15 +81,38 @@ export interface ToolCallInfo {
   status: 'executing' | 'success' | 'error';
   description?: string;
   result?: Record<string, unknown>;
+  taskId?: string;
+  agentId?: string;
+  phase?: string;
+  summary?: string;
 }
 
 export interface ChatWsMessage {
-  type: 'user_message' | 'ai_message' | 'tool_call' | 'tool_result' | 'error' | 'set_suggest_mode';
+  type:
+    | 'user_message'
+    | 'ai_message'
+    | 'tool_call'
+    | 'tool_result'
+    | 'error'
+    | 'set_suggest_mode'
+    | 'agent_phase'
+    | 'agent_plan'
+    | 'agent_plan_decision_required'
+    | 'agent_plan_decision'
+    | 'agent_plan_feedback'
+    | 'agent_task'
+    | 'agent_summary';
   content?: string;
   tool?: string;
   status?: string;
   description?: string;
   result?: Record<string, unknown>;
+  phase?: AgentPhase;
+  task_id?: string;
+  agent_id?: string;
+  parent_task_id?: string;
+  title?: string;
+  summary?: string;
   document_mutated?: boolean;
   reload_required?: boolean;
   tracked_changes_summary?: Record<string, unknown>;
@@ -80,4 +129,6 @@ export interface ChatWsMessage {
   message?: string;
   streaming?: boolean;
   suggest?: boolean;
+  decision?: 'yes' | 'no';
+  plan_mode?: boolean;
 }
