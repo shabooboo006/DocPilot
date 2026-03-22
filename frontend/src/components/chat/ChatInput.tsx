@@ -6,9 +6,10 @@ import type { ChatAttachment } from '../../types';
 interface ChatInputProps {
   documentId: string;
   onSend: (message: string, attachments?: ChatAttachment[]) => void;
+  analysisReadOnly?: boolean;
 }
 
-export function ChatInput({ documentId, onSend }: ChatInputProps) {
+export function ChatInput({ documentId, onSend, analysisReadOnly = false }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -23,6 +24,12 @@ export function ChatInput({ documentId, onSend }: ChatInputProps) {
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+
+  useEffect(() => {
+    if (analysisReadOnly) {
+      setPlanModeEnabled(false);
+    }
+  }, [analysisReadOnly, setPlanModeEnabled]);
 
   useEffect(() => {
     return () => {
@@ -51,6 +58,8 @@ export function ChatInput({ documentId, onSend }: ChatInputProps) {
   };
 
   const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (analysisReadOnly) return;
+
     const files = Array.from(event.clipboardData.files || []).filter((file) => file.type.startsWith('image/'));
     if (files.length === 0) {
       return;
@@ -74,6 +83,8 @@ export function ChatInput({ documentId, onSend }: ChatInputProps) {
   };
 
   const attachFiles = async (files: File[]) => {
+    if (analysisReadOnly) return;
+
     const imageFiles = files.filter((file) => file.type.startsWith('image/'));
     if (imageFiles.length === 0) return;
 
@@ -108,27 +119,28 @@ export function ChatInput({ documentId, onSend }: ChatInputProps) {
   };
 
   return (
-    <div className="border-t border-black/8 px-4 py-3">
+    <div className="border-t border-zinc-200 bg-white px-4 py-4">
       {attachments.length > 0 && (
-        <div className="mb-3 flex flex-wrap gap-3">
+        <div className="mb-4 flex flex-wrap gap-3">
           {attachments.map((attachment) => (
             <div key={attachment.asset_id} className="relative w-24">
               {attachment.previewUrl ? (
                 <img
                   src={attachment.previewUrl}
                   alt={attachment.filename}
-                  className="h-24 w-24 rounded-2xl border border-black/10 object-cover"
+                  className="h-24 w-24 rounded-2xl border border-zinc-200 object-cover"
                 />
               ) : (
-                <div className="flex h-24 w-24 items-center justify-center rounded-2xl border border-black/10 bg-stone-50 text-xs text-zinc-500">
+                <div className="flex h-24 w-24 items-center justify-center rounded-2xl border border-zinc-200 bg-zinc-50 text-xs text-zinc-500">
                   图片
                 </div>
               )}
               <button
                 type="button"
-                className="absolute right-1 top-1 rounded-full bg-black/70 px-1.5 py-0.5 text-[10px] text-white"
+                className="absolute right-1 top-1 rounded-full bg-zinc-950/85 px-1.5 py-0.5 text-[10px] text-white transition-colors duration-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2"
                 onClick={() => void handleRemoveAttachment(attachment)}
                 disabled={isAIThinking || isUploading}
+                title={`删除 ${attachment.filename}`}
               >
                 删除
               </button>
@@ -137,20 +149,37 @@ export function ChatInput({ documentId, onSend }: ChatInputProps) {
         </div>
       )}
 
-      <div className="flex gap-3">
-        <div className="flex flex-1 flex-col gap-2">
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <label htmlFor="chat-input" className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
+            输入消息
+          </label>
+          <span className="text-xs text-zinc-500">
+            {analysisReadOnly ? '当前文档处于招标分析只读模式。' : '支持粘贴截图或上传图片。'}
+          </span>
+        </div>
+
+        <div className="flex flex-col gap-2">
           <textarea
             id="chat-input"
             ref={inputRef}
-            className="min-h-[72px] flex-1 resize-none rounded-[20px] border border-black/10 bg-stone-50 px-4 py-3 text-sm leading-6 text-zinc-800 outline-none transition focus:border-amber-300 focus:bg-white focus:ring-4 focus:ring-amber-100"
-            placeholder={isAIThinking ? 'AI 正在处理当前文档...' : '例如：把这张图插到方法部分最后，并自动加标题。'}
+            aria-label="输入消息"
+            className="min-h-[112px] w-full resize-none rounded-[20px] border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-6 text-zinc-800 outline-none transition-colors duration-200 focus-visible:border-zinc-400 focus-visible:bg-white focus-visible:ring-2 focus-visible:ring-zinc-200"
+            placeholder={
+              isAIThinking
+                ? 'AI 正在处理当前文档...'
+                : analysisReadOnly
+                  ? '可继续提问：解释条款、总结要点、或点击右侧证据回看原文。'
+                  : '例如：把这张图插到方法部分最后，并自动加标题。'
+            }
             value={value}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={(event) => void handlePaste(event)}
             disabled={isAIThinking}
+            title="在这里输入消息，回车发送，Shift+Enter 换行"
           />
-          <div className="flex items-center gap-2 text-xs text-zinc-500">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
             <input
               ref={fileInputRef}
               type="file"
@@ -163,36 +192,42 @@ export function ChatInput({ documentId, onSend }: ChatInputProps) {
                 event.target.value = '';
               }}
             />
-            <button
-              type="button"
-              className="rounded-full border border-black/10 bg-white px-3 py-1.5 transition hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isAIThinking || isUploading}
-            >
-              {isUploading ? '上传中...' : '上传图片'}
-            </button>
-            <label className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-zinc-600">
+            {!analysisReadOnly && (
+              <button
+                type="button"
+                className="cursor-pointer rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-zinc-600 transition-colors duration-200 hover:border-zinc-300 hover:bg-zinc-100 hover:text-zinc-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isAIThinking || isUploading}
+                title="上传图片"
+              >
+                {isUploading ? '上传中...' : '上传图片'}
+              </button>
+            )}
+            <label className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-zinc-600">
               <input
                 type="checkbox"
                 className="h-3.5 w-3.5 accent-zinc-950"
                 checked={planModeEnabled}
                 onChange={(event) => setPlanModeEnabled(event.target.checked)}
-                disabled={isAIThinking}
+                disabled={isAIThinking || analysisReadOnly}
+                title="切换 Plan Mode"
               />
               <span>Plan Mode</span>
             </label>
-            <span>支持粘贴截图或上传图片。</span>
           </div>
         </div>
 
-        <button
-          type="button"
-          className="inline-flex min-w-[88px] items-center justify-center self-end rounded-full bg-zinc-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
-          onClick={handleSend}
-          disabled={(!value.trim() && attachments.length === 0) || isAIThinking || isUploading}
-        >
-          {isUploading ? '上传中' : isAIThinking ? '处理中' : '发送'}
-        </button>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="inline-flex min-w-[96px] items-center justify-center rounded-full bg-zinc-950 px-5 py-3 text-sm font-medium text-white transition-colors duration-200 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-zinc-300"
+            onClick={handleSend}
+            disabled={(!value.trim() && attachments.length === 0) || isAIThinking || isUploading}
+            title="发送消息"
+          >
+            {isUploading ? '上传中' : isAIThinking ? '处理中' : '发送'}
+          </button>
+        </div>
       </div>
     </div>
   );

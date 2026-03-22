@@ -1,17 +1,26 @@
 import { useRef, useState } from 'react';
 import { useDocumentStore } from '../../hooks/useDocumentStore';
 import { useChatStore } from '../../hooks/useChatStore';
-import { uploadDocument, createDocument, getDownloadUrl } from '../../services/api';
+import { useAnalysisStore } from '../../hooks/useAnalysisStore';
+import { uploadDocument, createDocument, getDownloadUrl, startTenderAnalysis } from '../../services/api';
 
 const TOOLBAR_BUTTON =
-  'inline-flex cursor-pointer items-center justify-center rounded-full border border-white/12 bg-white/8 px-4 py-2 text-sm font-medium text-white transition duration-200 hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-50';
+  'inline-flex cursor-pointer items-center justify-center rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-700 transition-colors duration-200 hover:border-zinc-400 hover:bg-zinc-50 hover:text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 focus-visible:ring-offset-white';
+
+const TOOLBAR_PRIMARY_BUTTON =
+  'inline-flex cursor-pointer items-center justify-center rounded-full border border-zinc-950 bg-zinc-950 px-4 py-2 text-sm font-medium text-white transition-colors duration-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 focus-visible:ring-offset-white';
+
+const TOOLBAR_SEGMENT =
+  'rounded-full px-4 py-2 text-sm font-medium transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 focus-visible:ring-offset-white';
 
 export function Toolbar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busyAction, setBusyAction] = useState<'idle' | 'upload' | 'create'>('idle');
-  const { documentId, documentName, suggestMode, setDocument, setSuggestMode, clearDocument } =
+  const { documentId, documentName, suggestMode, analysisReadOnly, setDocument, setSuggestMode, setAnalysisReadOnly, clearDocument } =
     useDocumentStore();
   const clearMessages = useChatStore((s) => s.clearMessages);
+  const setActiveTab = useAnalysisStore((s) => s.setActiveTab);
+  const resetForDocument = useAnalysisStore((s) => s.resetForDocument);
 
   const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -22,7 +31,9 @@ export function Toolbar() {
       const result = await uploadDocument(file);
       clearMessages();
       clearDocument();
+      resetForDocument();
       setDocument(result.document_id, result.name);
+      setAnalysisReadOnly(false);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '未知错误';
       alert(`上传失败: ${message}`);
@@ -38,7 +49,9 @@ export function Toolbar() {
       const result = await createDocument('新文档');
       clearMessages();
       clearDocument();
+      resetForDocument();
       setDocument(result.document_id, result.name);
+      setAnalysisReadOnly(false);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : '未知错误';
       alert(`创建失败: ${message}`);
@@ -55,25 +68,36 @@ export function Toolbar() {
     link.click();
   };
 
-  return (
-    <header className="px-4 pb-2 pt-4">
-      <div className="relative overflow-hidden rounded-[26px] border border-black/10 bg-zinc-950 text-white shadow-[0_24px_60px_rgba(15,23,42,0.14)]">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(212,175,55,0.22),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(255,255,255,0.08),transparent_28%)]" />
+  const handleTenderAnalysis = async () => {
+    if (!documentId) {
+      fileInputRef.current?.click();
+      return;
+    }
+    setAnalysisReadOnly(true);
+    setActiveTab('agent');
+    await startTenderAnalysis(documentId, true);
+  };
 
-        <div className="relative flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+  return (
+    <header className="px-4 pt-4">
+      <div className="rounded-[22px] border border-zinc-200 bg-white/95 px-4 py-3 shadow-[0_8px_24px_rgba(24,24,27,0.04)]">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.26em] text-zinc-400">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-zinc-400">
                 DocPilot
               </p>
-              <h1 className="mt-1 font-['Newsreader',serif] text-3xl leading-none tracking-[-0.04em]">
-                简洁文档工作台
+              <h1 className="mt-1 truncate text-lg font-semibold tracking-[-0.02em] text-zinc-950">
+                文档工作台
               </h1>
             </div>
 
             {documentId && (
-              <div className="inline-flex min-w-0 max-w-[320px] items-center gap-2 rounded-full border border-white/12 bg-white/6 px-3 py-2 text-sm text-zinc-300">
-                <span className="truncate font-medium text-white">{documentName}</span>
+              <div
+                className="inline-flex min-w-0 max-w-[340px] items-center gap-2 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600"
+                title={documentName}
+              >
+                <span className="truncate font-medium text-zinc-950">{documentName}</span>
               </div>
             )}
           </div>
@@ -99,7 +123,7 @@ export function Toolbar() {
 
               <button
                 type="button"
-                className={TOOLBAR_BUTTON}
+                className={TOOLBAR_PRIMARY_BUTTON}
                 onClick={handleCreate}
                 disabled={busyAction !== 'idle'}
               >
@@ -114,28 +138,43 @@ export function Toolbar() {
               >
                 下载
               </button>
+
+              <button
+                type="button"
+                className={`${TOOLBAR_BUTTON} border-zinc-300 bg-zinc-100 text-zinc-950 hover:border-zinc-400 hover:bg-zinc-200`}
+                onClick={() => void handleTenderAnalysis()}
+                disabled={busyAction !== 'idle'}
+              >
+                招标分析
+              </button>
             </div>
 
-            <div className="inline-flex w-fit rounded-full border border-white/12 bg-white/6 p-1">
-              <button
-                type="button"
-                className={`cursor-pointer rounded-full px-4 py-2 text-sm transition ${
-                  suggestMode ? 'bg-white text-zinc-950 shadow-sm' : 'text-zinc-300 hover:text-white'
-                }`}
-                onClick={() => setSuggestMode(true)}
-              >
-                建议模式
-              </button>
-              <button
-                type="button"
-                className={`cursor-pointer rounded-full px-4 py-2 text-sm transition ${
-                  !suggestMode ? 'bg-amber-400 text-zinc-950 shadow-sm' : 'text-zinc-300 hover:text-white'
-                }`}
-                onClick={() => setSuggestMode(false)}
-              >
-                直接编辑
-              </button>
-            </div>
+            {analysisReadOnly ? (
+              <div className="inline-flex w-fit rounded-full border border-zinc-200 bg-zinc-50 px-4 py-2 text-sm text-zinc-600">
+                招标分析只读查看
+              </div>
+            ) : (
+              <div className="inline-flex w-fit rounded-full border border-zinc-200 bg-zinc-50 p-1">
+                <button
+                  type="button"
+                  className={`${TOOLBAR_SEGMENT} ${
+                    suggestMode ? 'bg-white text-zinc-950 shadow-sm' : 'text-zinc-500 hover:text-zinc-950'
+                  }`}
+                  onClick={() => setSuggestMode(true)}
+                >
+                  建议模式
+                </button>
+                <button
+                  type="button"
+                  className={`${TOOLBAR_SEGMENT} ${
+                    !suggestMode ? 'bg-zinc-950 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-950'
+                  }`}
+                  onClick={() => setSuggestMode(false)}
+                >
+                  直接编辑
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

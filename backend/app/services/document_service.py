@@ -91,6 +91,27 @@ def save_current_document(document_id: str, file_data: bytes) -> None:
     s3.put_object(Bucket=BUCKET, Key=f"documents/{document_id}/current.docx", Body=file_data)
 
 
+def save_analysis_payload(document_id: str, filename: str, payload: dict) -> None:
+    key = f"documents/{document_id}/analysis/{filename}"
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=key,
+        Body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def load_analysis_payload(document_id: str, filename: str) -> dict | None:
+    key = f"documents/{document_id}/analysis/{filename}"
+    try:
+        response = s3.get_object(Bucket=BUCKET, Key=key)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            return None
+        raise
+    return json.loads(response["Body"].read())
+
+
 def delete_document(document_id: str) -> bool:
     prefix = f"documents/{document_id}/"
     response = s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)

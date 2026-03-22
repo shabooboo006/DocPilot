@@ -15,6 +15,7 @@ dependencies = [
     "python-multipart>=0.0.18",
     "pydantic-settings>=2.7",
     "python-dotenv>=1.0",
+    "crewai>=1.11.0",
 ]
 
 [project.optional-dependencies]

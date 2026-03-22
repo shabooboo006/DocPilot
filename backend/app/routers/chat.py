@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.services import agent_service
 from app.services.agent_service import AgentRuntimeState
+from app.services.realtime_service import realtime_service
 from app.services.superdoc_service import superdoc_service
 from app.models.schemas import ChatAttachment
 
@@ -33,6 +34,7 @@ _chat_sessions: dict[str, ChatSessionState] = {}
 @router.websocket("/ws/chat/{document_id}")
 async def chat_websocket(ws: WebSocket, document_id: str):
     await ws.accept()
+    await realtime_service.register(document_id, ws)
     logger.info(f"Chat WebSocket connected for document {document_id}")
 
     session = _chat_sessions.setdefault(document_id, ChatSessionState())
@@ -53,6 +55,7 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                 attachment_payloads = data.get("attachments") or []
                 attachments = [ChatAttachment.model_validate(item).model_dump() for item in attachment_payloads]
                 plan_mode = bool(data.get("plan_mode", False))
+                analysis_read_only = bool(data.get("analysis_read_only", False))
 
                 if not content and not attachments:
                     continue
@@ -72,6 +75,7 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                     ws=ws,
                     suggest=suggest,
                     plan_mode=plan_mode,
+                    analysis_read_only=analysis_read_only,
                     runtime=session.runtime,
                 )
 
@@ -110,6 +114,7 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                         ws=ws,
                         suggest=pending_plan.suggest,
                         plan_mode=False,
+                        analysis_read_only=pending_plan.analysis_read_only,
                         approved_plan_execution=True,
                         runtime=session.runtime,
                     )
@@ -147,6 +152,7 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                     ws=ws,
                     suggest=pending_plan.suggest,
                     plan_mode=True,
+                    analysis_read_only=pending_plan.analysis_read_only,
                     runtime=session.runtime,
                 )
                 session.history.append({"role": "user", "content": feedback})
@@ -154,6 +160,13 @@ async def chat_websocket(ws: WebSocket, document_id: str):
                     session.history.append({"role": "assistant", "content": result.content})
 
             elif msg_type == "set_suggest_mode":
+                if bool(data.get("analysis_read_only", False)):
+                    await ws.send_json({
+                        "type": "ai_message",
+                        "content": "招标分析场景下左侧文档处于只读查看模式，不能切换到可编辑模式。",
+                        "streaming": False,
+                    })
+                    continue
                 suggest = data.get("suggest", True)
                 await superdoc_service.switch_mode(document_id, suggest)
                 await ws.send_json({
@@ -167,10 +180,12 @@ async def chat_websocket(ws: WebSocket, document_id: str):
 
     except WebSocketDisconnect:
         logger.info(f"Chat WebSocket disconnected for document {document_id}")
+        await realtime_service.unregister(document_id, ws)
         await superdoc_service.close_session(document_id)
         _chat_sessions.pop(document_id, None)
     except Exception as e:
         logger.error(f"WebSocket error for document {document_id}: {e}")
+        await realtime_service.unregister(document_id, ws)
         try:
             await ws.send_json({"type": "error", "message": "Internal server error"})
         except Exception:

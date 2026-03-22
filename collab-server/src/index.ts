@@ -1,12 +1,15 @@
 import Fastify from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import { CollaborationBuilder, type CollaborationParams } from '@superdoc-dev/superdoc-yjs-collaboration';
-import { encodeStateAsUpdate } from 'yjs';
+import * as Y from 'yjs';
 import { config } from './config.js';
 import { dispatchAgentTool, getAgentTools, type DocumentMode } from './executor.js';
 import { ensureBucket, loadDocument, saveDocument } from './storage.js';
 
 const fastify = Fastify({ logger: true });
+const encodeStateAsUpdate = (Y as unknown as {
+  encodeStateAsUpdate: (document: CollaborationParams['document']) => Uint8Array;
+}).encodeStateAsUpdate;
 
 await fastify.register(websocketPlugin);
 

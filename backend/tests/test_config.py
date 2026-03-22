@@ -11,4 +11,5 @@ def test_settings_defaults():
     assert s.collab_server_url == "ws://localhost:6350"
     assert s.superdoc_executor_url == "http://localhost:6350"
     assert s.backend_port == 6800
+    assert s.crewai_verbose is False
     assert s.minio_use_ssl is False

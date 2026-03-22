@@ -1,7 +1,9 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useChatStore } from './useChatStore';
 import { useDocumentStore } from './useDocumentStore';
-import type { ChatAttachment, ChatWsMessage } from '../types';
+import { useAnalysisStore } from './useAnalysisStore';
+import { getTenderAnalysis } from '../services/api';
+import type { AnalysisRun, AnalysisStep, ChatAttachment, ChatWsMessage, TenderAnalysisSnapshot } from '../types';
 
 const WS_BASE = 'ws://localhost:6800';
 
@@ -19,8 +21,17 @@ export function useChatWebSocket(documentId: string | null) {
     resetRuntimeState,
   } = useChatStore();
   const suggestMode = useDocumentStore((s) => s.suggestMode);
+  const analysisReadOnly = useDocumentStore((s) => s.analysisReadOnly);
+  const setAnalysisReadOnly = useDocumentStore((s) => s.setAnalysisReadOnly);
   const requestEditorRefresh = useDocumentStore((s) => s.requestEditorRefresh);
   const planModeEnabled = useChatStore((state) => state.planModeEnabled);
+  const {
+    upsertRun,
+    upsertStep,
+    appendStepEvent,
+    setSnapshot,
+    setActiveTab,
+  } = useAnalysisStore();
 
   useEffect(() => {
     if (!documentId) return;
@@ -116,6 +127,43 @@ export function useChatWebSocket(documentId: string | null) {
           setAIThinking(false);
           addMessage({ role: 'system', error: data.message });
           break;
+        case 'tender_analysis_run':
+        case 'tender_analysis_run_update':
+          setAnalysisReadOnly(true);
+          if (data.run) {
+            upsertRun(data.run as AnalysisRun);
+          }
+          break;
+        case 'tender_analysis_step':
+        case 'tender_analysis_step_update':
+          if (data.run_id && data.step) {
+            upsertStep(data.run_id, data.step as Omit<AnalysisStep, 'runId'>);
+          }
+          break;
+        case 'tender_analysis_step_event':
+          if (data.run_id && data.step_id && data.event) {
+            appendStepEvent(data.run_id, data.step_id, data.event);
+          }
+          break;
+        case 'tender_analysis_run_complete':
+          if (data.run) {
+            upsertRun(data.run as AnalysisRun);
+          }
+          if (documentId) {
+            setAnalysisReadOnly(true);
+            void getTenderAnalysis(documentId).then((response) => {
+              if (response.snapshot) {
+                setSnapshot(response.snapshot as unknown as TenderAnalysisSnapshot);
+              }
+            });
+          }
+          setActiveTab('cockpit');
+          break;
+        case 'tender_analysis_run_failed':
+          if (data.run) {
+            upsertRun(data.run as AnalysisRun);
+          }
+          break;
       }
     };
 
@@ -144,6 +192,13 @@ export function useChatWebSocket(documentId: string | null) {
     upsertAgentTask,
     setAgentSummary,
     requestEditorRefresh,
+    analysisReadOnly,
+    setAnalysisReadOnly,
+    upsertRun,
+    upsertStep,
+    appendStepEvent,
+    setSnapshot,
+    setActiveTab,
   ]);
 
   const sendMessage = useCallback(
@@ -167,17 +222,18 @@ export function useChatWebSocket(documentId: string | null) {
             height,
           })),
           suggest: suggestMode,
+          analysis_read_only: analysisReadOnly,
           plan_mode: planModeEnabled,
         })
       );
     },
-    [addMessage, planModeEnabled, resetRuntimeState, setAIThinking, suggestMode]
+    [addMessage, analysisReadOnly, planModeEnabled, resetRuntimeState, setAIThinking, suggestMode]
   );
 
   const switchMode = useCallback((suggest: boolean) => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
-    ws.current.send(JSON.stringify({ type: 'set_suggest_mode', suggest }));
-  }, []);
+    ws.current.send(JSON.stringify({ type: 'set_suggest_mode', suggest, analysis_read_only: analysisReadOnly }));
+  }, [analysisReadOnly]);
 
   const sendPlanDecision = useCallback((decision: 'yes' | 'no') => {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;

@@ -1,155 +1,240 @@
 # AI Agent 与 SuperDoc 集成
 
-## Python SDK 连接协作会话
+## 当前集成方式
 
-```python
-from superdoc import SuperDoc
+当前仓库里的 Agent 并不是通过 Python SuperDoc SDK 直接打开协作会话，而是：
 
-class SuperDocService:
-    def __init__(self):
-        self.sessions = {}  # document_id → SDK session
+- backend `agent_service.py` 负责 LiteLLM agentic loop
+- backend `superdoc_service.py` 只负责调用 executor HTTP API
+- `collab-server` 的 `executor.ts` 维护当前文档工具 catalog，并用 SuperDoc headless editor 真正执行读写
 
-    async def get_session(self, document_id: str, suggest: bool = True):
-        if document_id not in self.sessions:
-            sd = SuperDoc()
-            await sd.doc.open(
-                collabUrl="ws://localhost:3050",
-                collabDocumentId=document_id,
-                defaultChangeMode="tracked" if suggest else "default",
-                user={"name": "DocPilot AI", "email": "ai@docpilot.local"}
-            )
-            self.sessions[document_id] = sd
-        return self.sessions[document_id]
+也就是说，FastAPI 这层是“Agent 调度器”，文档能力在 executor。
 
-    async def close_session(self, document_id: str):
-        if document_id in self.sessions:
-            await self.sessions[document_id].doc.close()
-            del self.sessions[document_id]
+## Agent 工具来源
+
+工具由：
+
+```text
+GET http://localhost:6350/agent/tools?mode=suggesting|editing&provider=openai
 ```
 
-## LLM Tool Definitions 获取
+返回 OpenAI function calling 兼容格式。
 
-Python SDK 提供 tool catalog，直接适配 OpenAI 格式：
+当前 executor 已暴露的工具覆盖：
 
-```python
-async def get_tool_definitions(self, session, mode="essential"):
-    # essential 模式：5 个核心工具 + discover_tools 元工具
-    # 让 LLM 按需发现更多工具组
-    tools = session.choose_tools(
-        provider="openai",
-        mode=mode  # "essential" | "all"
-    )
-    return tools
+### 读取与定位
+
+- `get_document_text`
+- `get_document_markdown`
+- `get_document_outline`
+- `list_style_inventory`
+- `inspect_segment_formatting`
+- `get_formatting_capabilities`
+- `find_text_context`
+- `query_match`
+- `preview_mutations`
+- `find_insertion_anchor`
+- `list_caption_conventions`
+- `get_table_details`
+- `list_comments`
+- `list_tracked_changes`
+- `list_hyperlinks`
+
+### 文档修改
+
+- `set_document_title`
+- `replace_text`
+- `replace_section_content`
+- `insert_paragraph_relative`
+- `insert_heading_relative`
+- `insert_section_relative`
+- `append_paragraph`
+- `apply_mutations`
+
+### 图片与表格
+
+- `insert_image_at_anchor`
+- `create_table_relative`
+- `create_table_at_anchor`
+- `set_table_cell_text`
+- `update_table_cells`
+
+### 批注、修订、链接、格式
+
+- `add_comment_on_text`
+- `reply_to_comment`
+- `resolve_comment`
+- `decide_tracked_change`
+- `wrap_text_with_link`
+- `apply_formatting`
+- `normalize_heading_hierarchy`
+
+## Agent 内部工具
+
+除了 executor tools，backend 还额外向模型暴露四个 runtime-only 工具：
+
+- `agent_update_todo`
+- `agent_write_scratchpad`
+- `agent_spawn_subtask`
+- `agent_finish_plan`
+
+这些工具不改文档，主要用来支撑复杂任务管理。
+
+## System Prompt 的当前重点
+
+当前 system prompt 已围绕 Word 结构化文档和工具恢复策略重写，核心约束包括：
+
+- 涉及正文修改前，先读文档或大纲
+- 精确改写前，先用 `find_text_context`
+- 工具失败后先看 `error_code` / `model_guidance` / `next_step_guidance`
+- 只在真实歧义时追问用户
+- 图片附件不默认插入文档，先判断是素材图还是参考图
+- Plan Mode 下必须以 `agent_finish_plan` 收尾
+
+## 当前 Agentic Loop
+
+```text
+用户消息
+  ↓
+FastAPI 组装 system prompt + chat history + 附件多模态内容
+  ↓
+从 collab-server 读取 executor tools
+  ↓
+附加内部 tools
+  ↓
+LiteLLM acompletion(...)
+  ↓
+若无 tool call:
+  - 普通模式：直接回复
+  - Plan Mode：把文本包装成待确认计划
+  ↓
+若有 tool call:
+  - 向前端发送 tool_call 事件
+  - 内部工具由 backend 直接执行
+  - 文档工具经 superdoc_service 转发到 collab-server
+  - 结果整理后回写 messages
+  - 必要时触发重试、停止或用户澄清
 ```
 
-## Agentic Loop 详细流程
+## Plan Mode
 
-```python
-async def run_agent_loop(document_id: str, user_message: str, ws: WebSocket):
-    # 1. 获取 superdoc 会话（Python SDK 连接到 Yjs 协作）
-    doc_session = superdoc_service.get_session(document_id)
+### 入口
 
-    # 2. 构建 tool definitions（从 Python SDK 获取）
-    tools = doc_session.choose_tools(provider="openai")
+- 用户显式请求“先出方案”
+- 或前端勾选 `Plan Mode`
 
-    # 3. 构建消息上下文
-    messages = build_messages(user_message, chat_history)
+### 约束
 
-    # 4. Agentic loop
-    while True:
-        # 调用 LiteLLM
-        response = await litellm.acompletion(
-            model=config.model,
-            messages=messages,
-            tools=tools
-        )
+- 严禁调用写入类文档工具
+- 只允许读取文档、拆解步骤、形成计划
+- 最终必须调用 `agent_finish_plan`
 
-        # 如果是纯文本回复，流式推送并结束
-        if no_tool_calls(response):
-            await ws.send_json({"type": "ai_message", ...})
-            break
+### 用户确认流
 
-        # 如果有 tool calls，逐个执行
-        for tool_call in response.tool_calls:
-            await ws.send_json({"type": "tool_call", "status": "executing", ...})
-            result = doc_session.dispatch_tool(tool_call)
-            await ws.send_json({"type": "tool_result", ...})
-            messages.append(tool_result_message(result))
+1. Agent 产出计划
+2. 前端展示计划卡片
+3. 用户：
+   - 选 `yes`：进入已确认执行态
+   - 选 `no`：进入收集补充反馈态
+4. Agent 根据补充信息重新生成计划或开始执行
 
-        # 结果回传 LLM 继续推理
+## 子任务机制
+
+`agent_spawn_subtask` 会启动一个只读分析子代理。
+
+子代理特征：
+
+- 只能使用 plan/read-only 白名单工具
+- 最多执行有限轮数
+- 返回简洁摘要给主代理
+- 不直接修改文档
+
+适用场景：
+
+- 长文档结构梳理
+- 多章节信息对比
+- 表格 / 时间线 / 样式的只读分析
+
+## 图片附件与插图流程
+
+当前多模态流程是 Agent 的新重点。
+
+### 附件进入模型的方法
+
+1. 前端上传图片到 backend
+2. backend 把预览图读成 data URL
+3. 组装为 OpenAI 多模态消息：
+   - 一段文字说明
+   - 一张或多张 `image_url`
+
+### 插图执行策略
+
+- 若用户只是在“参考这张图的样式”，不应直接插入
+- 若要插图，Agent 应先：
+  - 查正文结构
+  - 定位插图锚点
+  - 必要时了解 caption 约定
+  - 再调用 `insert_image_at_anchor`
+
+### 锚点歧义
+
+若 `find_insertion_anchor` 返回多个候选位置：
+
+- backend 会把候选位置回传前端
+- AI 立即停止写入并生成澄清消息
+- 用户回复“第一个 / 第二个 / 某章节附近文字”
+- `chat.py` 会把这次回复改写为带 `anchor_id` 的 continuation prompt
+
+## 建议模式 / 直接编辑
+
+FastAPI 侧只维护会话模式：
+
+```text
+suggest=True  -> mode=suggesting
+suggest=False -> mode=editing
 ```
 
-## 示例：AI 执行多步操作
+真正的写入语义由 collab-server executor 按模式执行。
 
-```
-用户消息: "添加一个三行两列的表格，第一行是表头"
-    │
-    ▼
-┌─────────────────────────────────────────────┐
-│ Round 1: LLM 分析意图                         │
-│ → tool_call: discover_tools(group="tables")  │
-│ → 结果: 返回 tables 组全部工具定义               │
-├─────────────────────────────────────────────┤
-│ Round 2: LLM 执行操作                         │
-│ → tool_call: create_table(rows=3, cols=2)    │
-│ → 结果: 表格已创建，返回 nodeId                 │
-├─────────────────────────────────────────────┤
-│ Round 3: LLM 填充内容                         │
-│ → tool_call: apply_mutations(...)            │
-│   填入表头文字                                 │
-│ → 结果: 成功                                  │
-├─────────────────────────────────────────────┤
-│ Round 4: LLM 判断任务完成                      │
-│ → 纯文本回复: "已创建表格并填入表头"              │
-│ → 结束 loop                                  │
-└─────────────────────────────────────────────┘
-```
+在前端：
 
-## 建议模式 / 直接生效切换
+- 建议模式显示修订按钮
+- 直接编辑模式隐藏修订操作
+- 招标分析只读模式下禁止切换
 
-```python
-# 用户通过 WebSocket 切换模式
-# { "type": "set_suggest_mode", "suggest": true/false }
+## 错误恢复策略
 
-async def handle_mode_switch(self, document_id: str, suggest: bool):
-    session = self.sessions.get(document_id)
-    if session:
-        # 关闭旧会话，以新模式重新连接
-        await self.close_session(document_id)
-        await self.get_session(document_id, suggest=suggest)
-```
+当前恢复逻辑比旧文档更细：
 
-## 错误处理策略
+### 结构化错误
 
-```
-Tool 执行失败（如 MATCH_NOT_FOUND）
-    │
-    ▼
-将错误信息回传 LLM → LLM 自行修正（superdoc 设计如此）
-    │
-    ▼
-最多重试 3 轮，仍失败则通知用户
-    │
-    ▼
-LLM 调用超时/网络错误 → 直接通知用户，不重试
-```
+executor 会返回结构化错误码，例如：
 
-## System Prompt
+- `ambiguous_match`
+- `title_not_unique`
+- `target_not_found`
+- `invalid_target_state`
+- `missing_target_text_for_inline_formatting`
+- `segment_has_single_text_candidate`
+- `single_candidate_context_mismatch`
 
-```python
-SYSTEM_PROMPT = """你是 DocPilot AI 文档助手。用户会要求你编辑当前打开的 .docx 文档。
+backend 会根据这些信息决定：
 
-你的能力：
-- 查找和修改文档内容（文字、格式、结构）
-- 创建表格、列表、标题、分节等结构元素
-- 插入图片、链接、目录
-- 管理批注和修订标记
-- 调整页面布局、页眉页脚
+- 继续让模型自修
+- 构造重试工具调用
+- 或直接要求用户澄清
 
-工作原则：
-- 先用 get_document_text 了解文档当前内容，再执行修改
-- 批量修改时合并到单次 apply_mutations 调用（减少 tool call 次数）
-- 修改完成后简要告知用户做了什么
-- 如果用户意图不明确，先询问而不是猜测
-"""
-```
+### 重试与停止保护
+
+- 同一工具签名失败过多会被阻断
+- 完全重复的工具调用达到阈值会停止
+- Plan Mode / analysis read-only 下写入工具会被直接拒绝
+
+## 招标分析只读模式
+
+当用户进入招标分析模式时，Agent 的 system prompt 会改成只读语义：
+
+- 允许：总结、解释、定位原文、回答问题
+- 禁止：改正文、插图、改表、批注、写入 tracked changes
+
+这保证驾驶舱问答不会误伤原始文档。

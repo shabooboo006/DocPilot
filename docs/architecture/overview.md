@@ -2,106 +2,150 @@
 
 ## 产品定位
 
-DocPilot 是一个 AI 驱动的 Web 文档编辑平台。用户在浏览器中查看和编辑 .docx 文档，通过右侧 Chat 面板用自然语言与 AI 对话，AI Agent 驱动文档修改。整体体验类似安装了 Claude Code 插件的 VSCode IDE，但操作对象是 .docx 文档而非代码。
+DocPilot 是一个 AI 驱动的 Word `.docx` 工作台。左侧是可编辑或只读查看的文档区，右侧既能承载文档 Agent，也能承载招标驾驶舱。它不是 HTML 富文本系统，而是围绕真实 Word 文档、结构化工具调用和证据回溯构建。
 
-## MVP 需求总结
+## 当前能力面
 
-| 维度 | 决定 |
-|------|------|
-| 用户模式 | 单用户 + AI，架构预留多人协作 |
-| 文档管理 | 上传 + 新建，后续扩展完整管理 |
-| AI 能力 | superdoc 全量 11 组 LLM tools |
-| 编辑模式 | 可切换：建议模式（默认）/ 直接生效 |
-| LLM 接入 | LiteLLM，OpenAI-compatible |
-| 存储 | 已有 MinIO（自建，认证信息具备） |
-| 部署 | 本地开发优先，不容器化 |
-| 认证 | MVP 不需要 |
+| 维度 | 当前实现 |
+|------|----------|
+| 文档管理 | 上传 `.docx`、新建空白文档、下载当前文档、删除文档 |
+| 编辑方式 | 手动编辑 + AI 修改 |
+| AI 写入模式 | 建议模式（tracked changes）/ 直接编辑 |
+| Agent 运行形态 | LiteLLM agentic loop + executor tools + 内部 runtime tools |
+| 多模态输入 | 聊天支持上传或粘贴图片附件 |
+| 计划能力 | Plan Mode、计划确认、补充反馈后重生成计划 |
+| 招标分析 | CrewAI 五阶段提取 + 过程流 + 固定驾驶舱 |
+| 原文回看 | 证据抽屉 + 左侧编辑器定位与高亮 |
+| 存储 | MinIO 保存文档、聊天图片附件、分析快照 |
 
-## MVP 功能边界
+## 当前不包含
 
-**包含：**
+- 用户认证与权限系统
+- 多人在线协同编辑的完整产品体验
+- 聊天历史持久化
+- 文档版本历史 / 回滚
+- 完整文档列表与搜索中心
+- Docker 化部署流程
 
-- 上传 .docx 文件并在编辑器中打开
-- 新建空白文档
-- 用户手动编辑文档
-- Chat 面板与 AI 对话
-- AI 通过 superdoc 全量 11 组工具编辑文档
-- 建议模式 / 直接生效切换
-- 下载编辑后的 .docx
-- 自动保存到 MinIO
+## 当前整体架构
 
-**不包含（后续迭代）：**
+系统仍然由前端、FastAPI、collab-server 和 MinIO 组成，但主链路与旧设计相比已有明显变化：
 
-- 用户认证与多用户
-- 多人实时协作
-- 文档列表管理与版本历史
-- 聊天记录持久化
-- 模板系统
-- Docker 容器化部署
-
-## 整体架构
-
-系统由 3 个服务 + 1 个外部存储组成：
-
+```text
+┌───────────────────────────────────────────────────────────────────┐
+│                             浏览器                                 │
+│  ┌──────────────────────────────┐  ┌────────────────────────────┐ │
+│  │  SuperDoc Editor / Viewer    │  │ Agent + Tender Cockpit    │ │
+│  │  - 通过 HTTP 拉取 docx         │  │ - Chat WebSocket          │ │
+│  │  - 本地挂载 SuperDoc           │  │ - Plan/Task/Tool 流       │ │
+│  │  - 导出 docx 后回写 backend     │  │ - Tender run/step 流       │ │
+│  └──────────────┬───────────────┘  └──────────────┬─────────────┘ │
+└─────────────────┼──────────────────────────────────┼──────────────┘
+                  │ HTTP / REST                      │ WebSocket
+                  ▼                                  ▼
+         ┌───────────────────────┐        ┌────────────────────────┐
+         │ FastAPI Backend       │        │ realtime_service       │
+         │ - 文档 CRUD            │        │ - 每 document 广播 WS   │
+         │ - Agent loop           │        └───────────┬────────────┘
+         │ - Tender analysis      │                    │
+         │ - executor client      │                    │
+         └──────────┬────────────┘                    │
+                    │ HTTP                            │
+                    ▼                                 │
+         ┌──────────────────────────────┐             │
+         │ collab-server / executor     │◄────────────┘
+         │ - /agent/tools               │
+         │ - /agent/dispatch            │
+         │ - /doc/:documentId           │
+         │ - SuperDoc headless mutate   │
+         └──────────┬───────────────────┘
+                    │
+                    ▼
+         ┌──────────────────────────────┐
+         │ MinIO                        │
+         │ - current.docx              │
+         │ - original.docx             │
+         │ - meta.json                 │
+         │ - chat-assets/*             │
+         │ - analysis/latest.json      │
+         └──────────────────────────────┘
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    用户浏览器                              │
-│  ┌──────────────────────────┐  ┌──────────────────────┐  │
-│  │   SuperDoc 编辑器 (React)  │  │    Chat 面板          │  │
-│  │   Yjs Provider ←─────────┼──┼──→ WebSocket         │  │
-│  └──────────────────────────┘  └──────────────────────┘  │
-└──────────────┬──────────────────────────┬────────────────┘
-               │ WebSocket (Yjs sync)     │ WebSocket (chat)
-               ▼                          ▼
-┌──────────────────────────┐   ┌──────────────────────────┐
-│  Yjs Collaboration Server │   │   FastAPI Backend        │
-│  (Node.js)                │   │   (Python)               │
-│                           │   │                          │
-│  - 文档 Yjs 状态管理        │   │  - AI Agent 编排 (LiteLLM)│
-│  - WebSocket 端点          │◄──┤  - Python SDK 接入协作会话  │
-│  - 文档加载/保存到 MinIO     │   │  - 聊天记录管理            │
-│                           │   │  - 文件上传/新建            │
-└──────────────┬────────────┘   └──────────────┬───────────┘
-               │                               │
-               ▼                               ▼
-         ┌──────────────────────────────────────────┐
-         │              MinIO (已部署)                │
-         │   - docpilot-documents bucket             │
-         └──────────────────────────────────────────┘
-```
 
-## 三个服务的职责
+## 三个运行服务
 
-| 服务 | 技术 | 端口 | 职责 |
-|------|------|------|------|
-| Frontend | React + Vite + SuperDoc | 5173 | 文档编辑器渲染、Chat UI、用户交互 |
-| Yjs Server | Node.js + @superdoc-dev/superdoc-yjs-collaboration | 3050 | Yjs 文档状态管理、WebSocket 同步、MinIO 读写 |
-| Backend | FastAPI + Python | 8000 | AI agent loop、LiteLLM 调用、Python SDK 文档操作、文件管理 API |
+| 服务 | 端口 | 作用 |
+|------|------|------|
+| Frontend | 6173 | 文档工作台 UI、编辑器挂载、聊天与驾驶舱 |
+| Backend | 6800 | REST API、Chat WebSocket、Agent runtime、Tender analysis |
+| collab-server | 6350 | Yjs 协作入口、SuperDoc executor、MinIO 读写 |
 
-## 核心数据流：AI 编辑文档
+## 核心数据流
 
-1. 用户在 Chat 面板输入自然语言指令
-2. Frontend 通过 WebSocket 发送消息到 FastAPI
-3. FastAPI 调用 LiteLLM，携带 superdoc tool definitions
-4. LLM 返回 tool calls（如 `query_match` + `apply_mutations`）
-5. FastAPI 通过 Python SDK 连接到 Yjs 协作会话，执行 tool calls
-6. Yjs CRDT 自动将变更同步到 Frontend 编辑器
-7. 用户实时看到文档变化（tracked changes 或直接生效）
-8. 工具执行结果回传 LLM，继续 agentic loop 直到完成
-9. FastAPI 将最终回复通过 WebSocket 推送到 Chat 面板
+### 1. 文档编辑主链路
 
-## 架构决策记录
+1. 用户上传或新建文档
+2. FastAPI 写入 `documents/{document_id}/original.docx`、`current.docx`、`meta.json`
+3. 前端通过 `GET /download` 拉取当前 docx
+4. 浏览器本地挂载 SuperDoc
+5. 用户编辑时触发 `export(docx)`，前端以防抖方式 `PUT /content`
+6. backend 把最新 docx 覆盖回 `current.docx`
 
-**为什么选择后端全驱动式（方案 B）：**
+说明：
 
-- Agentic loop 完全在后端闭环，逻辑集中，易于调试
-- 前端关闭不影响 AI 操作执行
-- 天然支持后续多人协作扩展（Yjs 已就位）
-- 后端可做重型处理（长文档、复杂操作）
+- 当前主编辑链路不是前端直接接 Yjs Provider
+- `collab-server` 仍然保留 `/doc/:documentId` 和 Yjs 基础设施，为 executor 与后续协同能力服务
 
-**文档引擎选择 superdoc 的原因：**
+### 2. AI 编辑文档链路
 
-- 高保真 .docx 导入/导出，保留复杂格式
-- 内置 AI Agent 支持（LLM tools、Python SDK）
-- 原生 Yjs 实时协作
-- 支持 tracked changes（建议模式）
+1. 用户在右侧发送消息，可附带图片
+2. 前端通过 `ws://localhost:6800/ws/chat/{document_id}` 发起一轮 agent turn
+3. FastAPI `agent_service` 获取 executor tools，并附加内部工具
+4. LiteLLM 返回工具调用
+5. FastAPI 把工具调用转发到 `collab-server` 的 `/agent/dispatch`
+6. `collab-server` 使用 SuperDoc headless editor 读取或修改 `current.docx`
+7. 若文档发生变化，tool result 会带上 `reload_required`
+8. 前端收到后递增 `editorRefreshKey`，重新拉取最新 docx 并重挂编辑器
+9. 最终 AI 回复、任务摘要、计划状态继续通过 WebSocket 返回
+
+### 3. 招标分析链路
+
+1. 用户点击工具栏“招标分析”
+2. 前端切换为分析只读模式，并调用 `POST /tender-analysis/extract`
+3. backend 从 executor 读取 `get_document_outline` 与 `get_document_markdown`
+4. backend 内嵌的 CrewAI 团队顺序执行五个阶段：
+   - `inventory`
+   - `core_facts`
+   - `timeline`
+   - `requirements`
+   - `risk_review`
+5. 每个阶段的 run / step / event 通过同一个聊天 WebSocket 广播到前端
+6. 结果汇总为 snapshot，持久化到 MinIO 的 `analysis/latest.json`
+7. 前端自动切到“招标驾驶舱”，加载固定数据面板
+8. 用户可修订字段、时间线、风险状态，并通过证据抽屉回看原文
+
+## 当前关键设计决策
+
+### 为什么引入 executor HTTP 层
+
+- FastAPI 不直接操纵浏览器编辑器实例
+- SuperDoc 文档工具集中在 `collab-server`，后端只负责调度和恢复逻辑
+- 便于把工具 catalog 与真正文档变更逻辑放在同一处维护
+
+### 为什么编辑器仍采用“下载-挂载-导出-回写”
+
+- 当前链路更直接，前端实现成本低
+- AI 修改完成后可以通过简单的重新加载看到最新结果
+- 保留 Yjs / collaboration 基础设施，但不强依赖它作为浏览器主编辑通道
+
+### 为什么招标分析单独进入只读模式
+
+- 驾驶舱强调“阅读、提取、校对、证据回看”，不是正文写作
+- analysis 模式下 Agent 被限制为只读工具，避免把分析问答误变成文档写入
+- 证据定位需要稳定的原文查看体验
+
+## 当前已知限制
+
+- 聊天历史仍只存内存，断线或重启会丢失
+- 文档编辑与 AI 修改之间采用“工具成功后刷新编辑器”而非实时增量合并
+- 招标分析快照可修订，但这些修订不会自动反写回原始 `.docx`
+- collab-server 虽有 `/doc/:documentId`，但前端当前没有直接启用该协作主链路

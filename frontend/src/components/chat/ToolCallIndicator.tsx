@@ -7,11 +7,11 @@ interface ToolCallIndicatorProps {
 const STATUS_META = {
   executing: {
     label: '执行中',
-    tone: 'border-amber-200 bg-amber-50 text-amber-700',
+    tone: 'border-zinc-200 bg-zinc-950 text-white',
   },
   success: {
     label: '已完成',
-    tone: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    tone: 'border-zinc-200 bg-zinc-50 text-zinc-700',
   },
   error: {
     label: '失败',
@@ -61,51 +61,106 @@ export function ToolCallIndicator({ message }: ToolCallIndicatorProps) {
 
   return (
     <div className="flex justify-start">
-      <div className="max-w-[94%] text-sm leading-6 text-zinc-800">
-        <div className="flex items-center gap-2">
-          <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.16em] ${current.tone}`}>
-            {current.label}
-          </span>
-          <span className="font-mono text-[12px] text-zinc-500">{toolCall.tool}</span>
+      <div className="max-w-[94%] rounded-2xl border border-zinc-200 bg-white px-4 py-4 text-sm leading-6 text-zinc-800 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.16em] ${current.tone}`}>
+              {current.label}
+            </span>
+            <span className="font-mono text-[12px] text-zinc-500">{toolCall.tool}</span>
+          </div>
+          {toolCall.description && (
+            <p className="text-xs font-medium uppercase tracking-[0.14em] text-zinc-500">
+              Tool activity
+            </p>
+          )}
         </div>
-        {toolCall.description && <p className="mt-2 text-sm leading-6 text-zinc-900">{toolCall.description}</p>}
+
+        {toolCall.description && <p className="mt-3 text-sm leading-6 text-zinc-900">{toolCall.description}</p>}
         {summary && <p className="mt-1 text-sm leading-6 text-zinc-700">{summary}</p>}
-        {typeof trackedChangesSummary?.total === 'number' && (
-          <p className="mt-1 text-sm leading-6 text-zinc-500">当前修订数：{trackedChangesSummary.total}</p>
-        )}
-        {errorCode && (
-          <p className={`mt-1 text-sm leading-6 ${isRecoverableError(errorCode) ? 'text-amber-700' : 'text-rose-600'}`}>
-            {isRecoverableError(errorCode) ? '调整类型' : '错误类型'}：{errorCode}
-          </p>
-        )}
-        {isRecoverableError(errorCode) && buildRecoveryHint(errorCode, errorDetails) && (
-          <p className="mt-1 text-sm leading-6 text-amber-700">{buildRecoveryHint(errorCode, errorDetails)}</p>
-        )}
+
+        <div className="mt-3 grid gap-2">
+          {typeof trackedChangesSummary?.total === 'number' && (
+            <DetailRow label="修订数" value={`当前修订数：${trackedChangesSummary.total}`} />
+          )}
+          {errorCode && (
+            <DetailRow
+              label={isRecoverableError(errorCode) ? '调整类型' : '错误类型'}
+              value={errorCode}
+              tone={isRecoverableError(errorCode) ? 'warning' : 'error'}
+            />
+          )}
+          {isRecoverableError(errorCode) && buildRecoveryHint(errorCode, errorDetails) && (
+            <DetailRow label="恢复建议" value={buildRecoveryHint(errorCode, errorDetails) || ''} tone="warning" />
+          )}
+          {Boolean(reloadRequired) && <DetailRow label="刷新状态" value="文档已刷新到最新 AI 结果。" />}
+        </div>
+
         {Array.isArray(candidates) && candidates.length > 0 && (
-          <div className="mt-2 space-y-1 text-sm leading-6 text-zinc-600">
-            {candidates.slice(0, 3).map((candidate, index) => (
-              <p key={`${candidate.location_label}-${index}`}>
-                {index + 1}. {candidate.location_label || '未知位置'}
-                {candidate.matched_text
-                  ? `: ${(candidate.context_before || '')}[${candidate.matched_text}]${candidate.context_after || ''}`
-                  : ''}
-              </p>
-            ))}
+          <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">候选位置</p>
+            <div className="mt-2 space-y-2">
+              {candidates.slice(0, 3).map((candidate, index) => (
+                <div key={`${candidate.location_label}-${index}`} className="rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                  <p className="text-sm font-medium text-zinc-900">
+                    {index + 1}. {candidate.location_label || '未知位置'}
+                  </p>
+                  {candidate.matched_text && (
+                    <p className="mt-1 text-sm leading-6 text-zinc-600">
+                      {(candidate.context_before || '')}
+                      <span className="font-medium text-zinc-950">[{candidate.matched_text}]</span>
+                      {candidate.context_after || ''}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
+
         {Array.isArray(anchorCandidates) && anchorCandidates.length > 0 && (
-          <div className="mt-2 space-y-1 text-sm leading-6 text-zinc-600">
-            {anchorCandidates.slice(0, 3).map((candidate, index) => (
-              <p key={`${candidate.location_label}-${index}`}>
-                {index + 1}. {candidate.location_label || '未知位置'}
-                {candidate.section_path ? `（${candidate.section_path}）` : ''}
-                {typeof candidate.confidence === 'number' ? `，置信度 ${candidate.confidence}` : ''}
-              </p>
-            ))}
+          <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-zinc-500">锚点候选</p>
+            <div className="mt-2 space-y-2">
+              {anchorCandidates.slice(0, 3).map((candidate, index) => (
+                <div key={`${candidate.location_label}-${index}`} className="rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                  <p className="text-sm font-medium text-zinc-900">
+                    {index + 1}. {candidate.location_label || '未知位置'}
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-zinc-600">
+                    {candidate.section_path ? `${candidate.section_path} · ` : ''}
+                    {typeof candidate.confidence === 'number' ? `置信度 ${candidate.confidence}` : '可定位'}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
-        {Boolean(reloadRequired) && <p className="mt-1 text-sm leading-6 text-zinc-500">文档已刷新到最新 AI 结果。</p>}
       </div>
+    </div>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: string;
+  tone?: 'neutral' | 'warning' | 'error';
+}) {
+  const toneClass =
+    tone === 'warning'
+      ? 'border-amber-200 bg-amber-50 text-amber-700'
+      : tone === 'error'
+        ? 'border-rose-200 bg-rose-50 text-rose-700'
+        : 'border-zinc-200 bg-zinc-50 text-zinc-700';
+
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${toneClass}`}>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em]">{label}</p>
+      <p className="mt-1 text-sm leading-6">{value}</p>
     </div>
   );
 }

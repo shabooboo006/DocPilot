@@ -39,3 +39,16 @@ class ChatMessage(BaseModel):
     result: dict | None = None
     message: str = ""
     streaming: bool = False
+
+
+class TenderAnalysisJobResponse(BaseModel):
+    job_id: str
+    status: str
+    run: dict | None = None
+    snapshot: dict | None = None
+
+
+class TenderAnalysisSnapshotResponse(BaseModel):
+    status: str
+    active_job_id: str | None = None
+    snapshot: dict | None = None

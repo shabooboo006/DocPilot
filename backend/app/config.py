@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     collab_server_url: str = "ws://localhost:6350"
     superdoc_executor_url: str = "http://localhost:6350"
     backend_port: int = 6800
+    crewai_verbose: bool = False
 
     model_config = SettingsConfigDict(
         env_file="../.env",

@@ -93,6 +93,7 @@ class PendingPlan:
     source_user_message: str
     attachments: list[dict[str, Any]] = field(default_factory=list)
     suggest: bool = True
+    analysis_read_only: bool = False
     waiting_for_feedback: bool = False
 
 
@@ -141,12 +142,17 @@ BASE_SYSTEM_PROMPT = """你是 DocPilot AI 文档助手。用户会要求你阅�
 """
 
 
-def build_system_prompt(*, suggest: bool, plan_mode: bool) -> str:
+def build_system_prompt(*, suggest: bool, plan_mode: bool, analysis_read_only: bool = False) -> str:
     mode_prompt = (
         "当前文档处于建议模式，文档写入会生成 tracked changes / 修订。"
         if suggest
         else "当前文档处于直接编辑模式，文档写入会直接生效。"
     )
+    if analysis_read_only:
+        mode_prompt = (
+            "当前文档处于招标分析只读模式。你只能阅读、解释、总结、定位原文和回答问题，"
+            "严禁修改文档、插图、改表、加批注或产生任何写入行为。"
+        )
     if plan_mode:
         return f"""{BASE_SYSTEM_PROMPT}
 
@@ -198,14 +204,14 @@ def _extract_message_content(message: Any) -> str:
     return ""
 
 
-def _executor_tool_allowed(tool_name: str, plan_mode: bool) -> bool:
-    if not plan_mode:
+def _executor_tool_allowed(tool_name: str, plan_mode: bool, analysis_read_only: bool = False) -> bool:
+    if not plan_mode and not analysis_read_only:
         return True
     return tool_name in PLAN_ONLY_ALLOWED_TOOLS
 
 
-def _filter_executor_tools(tools: list[dict[str, Any]], plan_mode: bool) -> list[dict[str, Any]]:
-    if not plan_mode:
+def _filter_executor_tools(tools: list[dict[str, Any]], plan_mode: bool, analysis_read_only: bool = False) -> list[dict[str, Any]]:
+    if not plan_mode and not analysis_read_only:
         return tools
     filtered: list[dict[str, Any]] = []
     for tool in tools:
@@ -522,9 +528,10 @@ async def _run_subagent(
     prompt: str,
     attachments: list[dict[str, Any]],
     suggest: bool,
+    analysis_read_only: bool,
 ) -> str:
     session = await superdoc_service.get_session(document_id, suggest=suggest)
-    tools = _filter_executor_tools(await superdoc_service.get_tools(session), plan_mode=True)
+    tools = _filter_executor_tools(await superdoc_service.get_tools(session), plan_mode=True, analysis_read_only=analysis_read_only)
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -605,6 +612,7 @@ async def _handle_internal_tool(
     document_id: str,
     attachments: list[dict[str, Any]],
     suggest: bool,
+    analysis_read_only: bool,
     user_message: str,
 ) -> tuple[dict[str, Any], bool]:
     if tool_name == "agent_update_todo":
@@ -632,6 +640,7 @@ async def _handle_internal_tool(
             prompt=prompt or user_message,
             attachments=attachments,
             suggest=suggest,
+            analysis_read_only=analysis_read_only,
         )
         task.status = "completed"
         task.summary = summary
@@ -646,6 +655,7 @@ async def _handle_internal_tool(
             source_user_message=user_message,
             attachments=attachments,
             suggest=suggest,
+            analysis_read_only=analysis_read_only,
         )
         runtime.pending_plan = pending_plan
         runtime.plan_mode_state = "awaiting_decision"
@@ -667,6 +677,7 @@ async def run_agent_loop(
     ws: WebSocket,
     suggest: bool = True,
     plan_mode: bool = False,
+    analysis_read_only: bool = False,
     approved_plan_execution: bool = False,
     runtime: Optional[AgentRuntimeState] = None,
 ) -> AgentLoopResult:
@@ -678,14 +689,17 @@ async def run_agent_loop(
 
     try:
         session = await superdoc_service.get_session(document_id, suggest=suggest)
-        executor_tools = _filter_executor_tools(await superdoc_service.get_tools(session), plan_mode)
+        executor_tools = _filter_executor_tools(await superdoc_service.get_tools(session), plan_mode, analysis_read_only)
     except Exception as e:
         logger.error(f"Executor bootstrap error: {e}")
         await ws.send_json({"type": "error", "message": str(e)})
         return AgentLoopResult(content=None)
 
     tools = executor_tools + _internal_tools()
-    messages: list[dict[str, Any]] = [{"role": "system", "content": build_system_prompt(suggest=suggest, plan_mode=plan_mode)}]
+    messages: list[dict[str, Any]] = [{
+        "role": "system",
+        "content": build_system_prompt(suggest=suggest, plan_mode=plan_mode, analysis_read_only=analysis_read_only),
+    }]
     messages.extend(chat_history)
     messages.append({"role": "user", "content": _build_user_content(user_message, document_id, attachments)})
 
@@ -720,6 +734,7 @@ async def run_agent_loop(
                     source_user_message=user_message,
                     attachments=attachments,
                     suggest=suggest,
+                    analysis_read_only=analysis_read_only,
                 )
                 runtime.pending_plan = pending_plan
                 runtime.plan_mode_state = "awaiting_decision"
@@ -801,6 +816,7 @@ async def run_agent_loop(
                     document_id=document_id,
                     attachments=attachments,
                     suggest=suggest,
+                    analysis_read_only=analysis_read_only,
                     user_message=user_message,
                 )
                 await ws.send_json(
@@ -825,14 +841,18 @@ async def run_agent_loop(
                     return AgentLoopResult(content="已生成计划，请确认是否执行。", plan_generated=True)
                 continue
 
-            if plan_mode and tool_name in MUTATION_TOOL_NAMES:
+            if (plan_mode or analysis_read_only) and tool_name in MUTATION_TOOL_NAMES:
                 error_result = _structured_tool_error_result(
                     kind="tool_forbidden_in_plan_mode",
-                    message=f"Plan Mode 禁止执行 {tool_name} 这类文档写入工具。",
+                    message=f"{'招标分析只读模式' if analysis_read_only and not plan_mode else 'Plan Mode'} 禁止执行 {tool_name} 这类文档写入工具。",
                     retryable=False,
                     user_action_required=False,
                     same_call_retry_forbidden=True,
-                    model_guidance="Stay in planning mode. Read the document, refine the plan, and finish with agent_finish_plan.",
+                    model_guidance=(
+                        "This document is read-only in tender analysis mode. Only inspect the document, explain findings, and answer questions."
+                        if analysis_read_only and not plan_mode
+                        else "Stay in planning mode. Read the document, refine the plan, and finish with agent_finish_plan."
+                    ),
                 )
                 await ws.send_json(
                     {
